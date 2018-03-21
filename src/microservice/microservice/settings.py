@@ -11,7 +11,11 @@ https://docs.djangoproject.com/en/2.0/ref/settings/
 """
 
 import os
-
+import traceback
+import json
+import binascii
+import random
+from . import crypt
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -20,7 +24,21 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # See https://docs.djangoproject.com/en/2.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = '6wx6-q**&u!hyg+hs722%y#j8*8z@82%yb9k5m^7ks)^gofg3#'
+SECRET_KEY_LEN = 50
+ascii_printable = [chr(c) for c in range(ord('!'),ord('~')+1)]
+print('loading django key')
+if 'SECRET_KEY' not in locals():
+    if os.path.isfile(os.path.join(BASE_DIR, '.djangokey')):
+        with open(os.path.join(BASE_DIR, '.djangokey'), 'r') as f:
+            SECRET_KEY = f.readline().strip()
+    else:
+        SECRET_KEY = ''.join([random.SystemRandom().choice(ascii_printable) for i in range(0,SECRET_KEY_LEN)])
+        try:
+            with open(os.path.join(BASE_DIR, '.djangokey'), 'w') as f:
+                f.write(SECRET_KEY)
+        except OSError as e:
+            print('Could not save django key. This will result in a different key being used each execution')
+            traceback.print_exc()
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -31,6 +49,7 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    'microservice',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -73,12 +92,53 @@ WSGI_APPLICATION = 'microservice.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/2.0/ref/settings/#databases
 
+with open('/etc/auth_microservice/db.credentials', 'r') as f:
+    d = json.loads(f.read())
+    host = d['host']
+    port = d['port']
+    user = d['user']
+    password = d['password']
+
+KEY_LEN = 32
+with open('/etc/auth_microservice/db.key', 'r') as f:
+    d = f.readline().strip()
+    if len(d) != KEY_LEN * 2:
+        print('key file must contain a 64 byte hexidecimal string')
+    DB_KEY = binascii.unhexlify(d.encode('utf-8'))
+    crypt.instance = crypt.Crypt(DB_KEY)
+    if DEBUG:
+        print("DB_KEY: " + str(DB_KEY))
+
+ADMIN_KEY_LEN = 32
+with open('/etc/auth_microservice/admin.key', 'r') as f:
+    d = f.readline().strip()
+    if len(d) != ADMIN_KEY_LEN * 2:
+        print('key file must contain a 64 byte hexidecimal string')
+    ADMIN_KEY = d.encode('utf-8') # this remains as hex
+    if DEBUG:
+        print("ADMIN_KEY: " + str(ADMIN_KEY))
+
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
+        #'ENGINE': 'django.db.backends.sqlite3',
+        #'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'auth_microservice',
+        'USER': user,
+        'PASSWORD': password,
+        'HOST': host,
+        'PORT': port,
     }
 }
+
+
+# Load application configuration
+print('loading configuration')
+with open('/etc/auth_microservice/config.json', 'r') as f:
+    d = json.loads(f.read())
+    if 'providers' not in d:
+        raise RuntimeError('providers missing from config')
+
 
 
 # Password validation
