@@ -114,16 +114,16 @@ class RedirectHandler(object):
         else: return l[0]
 
     def get_from_field(self, fieldname, fieldval):
-        return [x for x in self.waiting if x[fieldname] == fieldval]
+        return [x for x in RedirectState if x[fieldname] == fieldval]
         
     '''
         Not thread-safe, should only be used internally
     '''
     def _generate_authorization_url(self, state, nonce, scopes, provider_tag):
-        p = self.config['providers'][provider_tag]
+        p = RedirectState.config['providers'][provider_tag]
         
         client_id = p['client_id']
-        redirect_uri = self.config['redirect_uri']
+        redirect_uri = RedirectState.config['redirect_uri']
 
         # get auth endpoint
         if p['standard'] == 'OpenID Connect':
