@@ -28,13 +28,18 @@ SECRET_KEY_LEN = 50
 ascii_printable = [chr(c) for c in range(ord('!'),ord('~')+1)]
 print('loading django key')
 if 'SECRET_KEY' not in locals():
-    if os.path.isfile(os.path.join(BASE_DIR, '.djangokey')):
-        with open(os.path.join(BASE_DIR, '.djangokey'), 'r') as f:
+    loaded_django_key = False
+    if os.path.isfile(os.path.join(BASE_DIR, '.django.key')):
+        with open(os.path.join(BASE_DIR, '.django.key'), 'r') as f:
             SECRET_KEY = f.readline().strip()
-    else:
+            if len(SECRET_KEY) == SECRET_KEY_LEN:
+                loaded_django_key = True
+            else:
+                print('saved django key is incorrect size, generating new key')
+    if not loaded_django_key:
         SECRET_KEY = ''.join([random.SystemRandom().choice(ascii_printable) for i in range(0,SECRET_KEY_LEN)])
         try:
-            with open(os.path.join(BASE_DIR, '.djangokey'), 'w') as f:
+            with open(os.path.join(BASE_DIR, '.django.key'), 'w') as f:
                 f.write(SECRET_KEY)
         except OSError as e:
             print('Could not save django key. This will result in a different key being used each execution')
@@ -138,7 +143,8 @@ with open('/etc/auth_microservice/config.json', 'r') as f:
     d = json.loads(f.read())
     if 'providers' not in d:
         raise RuntimeError('providers missing from config')
-
+    import microservice.redirect_handler
+    microservice.redirect_handler.RedirectState.config = d
 
 
 # Password validation

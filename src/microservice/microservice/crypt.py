@@ -1,5 +1,6 @@
 from Crypto.Cipher import AES
 import os
+import base64
 
 instance = None # singleton pointer, initialize Crypt() once if .crypt is None
 

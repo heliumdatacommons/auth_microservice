@@ -31,6 +31,7 @@ class Token(models.Model):
     provider = models.CharField(max_length=256)
     issuer = models.CharField(max_length=256)
     enabled = models.BooleanField(default=True)
+    scopes = models.ManyToManyField('Scope')
 
 class Scope(models.Model):
     name = models.CharField(max_length=256)
