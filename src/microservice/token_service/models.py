@@ -1,5 +1,5 @@
 from django.db import models
-from microservice import crypt
+from . import crypt
 
 class EncryptedTextField(models.TextField):
     def __init__(self, *args, **kwargs):

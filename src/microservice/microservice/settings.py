@@ -15,7 +15,7 @@ import traceback
 import json
 import binascii
 import random
-from . import crypt
+from token_service import crypt
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -48,13 +48,13 @@ if 'SECRET_KEY' not in locals():
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['35.185.96.26']
 
 
 # Application definition
 
 INSTALLED_APPS = [
-    'microservice',
+    'token_service',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -108,7 +108,7 @@ KEY_LEN = 32
 with open('/etc/auth_microservice/db.key', 'r') as f:
     d = f.readline().strip()
     if len(d) != KEY_LEN * 2:
-        print('key file must contain a 64 byte hexidecimal string')
+        print('db key file must contain a 64 byte hexidecimal string')
     DB_KEY = binascii.unhexlify(d.encode('utf-8'))
     crypt.instance = crypt.Crypt(DB_KEY)
     if DEBUG:
@@ -118,7 +118,7 @@ ADMIN_KEY_LEN = 32
 with open('/etc/auth_microservice/admin.key', 'r') as f:
     d = f.readline().strip()
     if len(d) != ADMIN_KEY_LEN * 2:
-        print('key file must contain a 64 byte hexidecimal string')
+        print('admin key file must contain a 64 byte hexidecimal string')
     ADMIN_KEY = d.encode('utf-8') # this remains as hex
     if DEBUG:
         print("ADMIN_KEY: " + str(ADMIN_KEY))
@@ -143,8 +143,8 @@ with open('/etc/auth_microservice/config.json', 'r') as f:
     d = json.loads(f.read())
     if 'providers' not in d:
         raise RuntimeError('providers missing from config')
-    import microservice.redirect_handler
-    microservice.redirect_handler.RedirectState.config = d
+    import token_service.redirect_handler
+    token_service.redirect_handler.RedirectState.config = d
 
 
 # Password validation

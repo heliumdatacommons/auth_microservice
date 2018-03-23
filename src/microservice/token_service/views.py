@@ -46,13 +46,13 @@ def token(request):
     
     tokens = models.Token.objects.filter(
         user_id=uid,
-        scopes__in=models.Scope.filter(name__in=scopes),
+        scopes__in=models.Scope.objects.filter(name__in=scopes),
         provider=provider
     )
     
     if len(tokens) == 0:
         # no existing token matches these parameters
-        handler = RedirectHandler()
+        handler = redirect_handler.RedirectHandler()
         url = handler.add(uid, scopes, provider)
         return JsonResponse(status=401, data={'authorization_url': url})
     
@@ -73,5 +73,5 @@ def authcallback(request):
     # check state against active list
     # get provider corresponding to the state
     # exchange code for token response via that provider's token endpoint
-    handler = RedirectHandler()
+    handler = redirect_handler.RedirectHandler()
     handler.accept(request)

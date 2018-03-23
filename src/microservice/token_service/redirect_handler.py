@@ -114,7 +114,7 @@ class RedirectHandler(object):
         else: return l[0]
 
     def get_from_field(self, fieldname, fieldval):
-        return [x for x in RedirectState if x[fieldname] == fieldval]
+        return [x for x in RedirectState.waiting if x[fieldname] == fieldval]
         
     '''
         Not thread-safe, should only be used internally
@@ -131,19 +131,18 @@ class RedirectHandler(object):
             meta_url = p['metadata_url']
             if provider_tag not in RedirectState.openid_metadata_cache:
                 response = requests.get(meta_url)
-                if response.code != 200:
-                    raise RuntimeError('could not retrieve openid metadata, returned error: ' + str(response.code))
+                if response.status_code != 200:
+                    raise RuntimeError('could not retrieve openid metadata, returned error: ' + str(response.status_code))
+                meta = json.loads(response.content.decode('utf-8'))
                 # cache this metadata
                 RedirectState.openid_metadata_cache[provider_tag] = meta
-                meta = json.loads(response.content.decode('utf-8'))
             else:
                 meta = RedirectState.openid_metadata_cache[provider_tag]
 
             authorization_endpoint = meta['authorization_endpoint']
-            if ',' in scope:
-                scope = ' '.join(scope.split(','))
+            scope = ' '.join(scopes)
             scope = quote(scope)
-            additional_params += 'scope=' + scope
+            additional_params = 'scope=' + scope
             additional_params += '&response_type=code'
             additional_params += '&access_type=offline'
             additional_params += '&login%20consent'
@@ -157,12 +156,12 @@ class RedirectHandler(object):
         else:
             raise RuntimeError('unknown provider standard: ' + p['standard'])
 
-        url = '{}?state={}&nonce={}&redirect_uri={}client_id={}&{}'.format(
+        url = '{}?state={}&nonce={}&redirect_uri={}&client_id={}&{}'.format(
             authorization_endpoint,
             state,
             nonce,
             redirect_uri,
             client_id,
-            additonal_params,
+            additional_params,
         )
         return url
