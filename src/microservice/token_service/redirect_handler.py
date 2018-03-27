@@ -1,11 +1,15 @@
 import requests
 import json
 import datetime
+import base64
+import jwt
 from urllib.parse import quote
 from threading import Lock
 from . import util
-
 from django.http import HttpRequest
+from django.http import (
+        HttpResponse, HttpResponseNotAllowed, HttpResponseBadRequest, JsonResponse, HttpResponseServerError
+)
 
 def mutex(lock):
     def decorated_func(func):
@@ -17,6 +21,7 @@ def mutex(lock):
 
 class RedirectState(object):
     openid_metadata_cache = {}
+    cache_lock = Lock()
 
     config = {}
     config_lock = Lock()
@@ -67,7 +72,7 @@ class RedirectHandler(object):
         # prevent unlikely chance that two waiting authorizations have same nonce or state
         # TODO change this to have in-memory cache of old nonce and state values. keep for N days
         while True:
-            nonce = util.generate_nonce(64) # url safe 32bit (64byte hex)
+            nonce = util.generate_nonce(64) # url safe 32byte (64byte hex)
             if not self.exists_nonce(nonce):
                 break
         while True:
@@ -86,17 +91,153 @@ class RedirectHandler(object):
                 'ctime': datetime.datetime.now()
             }
         )
+
         return url
 
 
     '''
+        Accept a request conforming to Authorization Code Flow OIDC Core 1.0 section 3.1.2.5
+        (http://openid.net/specs/openid-connect-core-1_0.html#AuthResponse)
+
         request is a django.http.HttpRequest
+
+        Returns an HttpResponse, with corresponding values filled in for client
     '''
-    @mutex(RedirectState.waiting_lock)
+    #@mutex(RedirectState.waiting_lock)
+    #@mutex(RedirectState.config_lock)
+    #@mutex(RedirectState.cache_lock)
     def accept(self, request):
-        pass
+        # TODO refactor so this lazy import is not needed
+        from . import models
+        state = request.GET.get('state')
+        code = request.GET.get('code')
+        if not code:
+            return HttpResponseBadRequest('callback did not contain an authorization code')
+        if not state:
+            return HttpResponseBadRequest('callback state did not match expected')
+        
+        if self.exists_state(state):
+            w = self.get_from_state(state)
+            if not w:
+                return HttpResponseNotAllowed('callback request from login is malformed, or authorization session expired')
+
+            provider = w['provider']
+            if self.is_openid(provider):
+                token_endpoint = RedirectState.openid_metadata_cache[provider]['token_endpoint']
+            else: # require non-openid providers to specify the token endpoint
+                token_endpoint = RedirectState.config['providers'][provider]['token_endpoint']
+            client_id = RedirectState.config['providers'][provider]['client_id']
+            client_secret = RedirectState.config['providers'][provider]['client_secret']
+            redirect_uri = RedirectState.config['redirect_uri']
+            token_response = self._token_request(
+                    token_endpoint,
+                    client_id,
+                    client_secret,
+                    code,
+                    redirect_uri)
+            if token_response.status_code not in [200,302]:
+                return HttpResponseServerError('could not acquire token from provider' + str(vars(token_response)))
+            body = json.loads(token_response.content)
+            id_token = body['id_token']
+            access_token = body['access_token']
+            expires_in = body['expires_in']
+            refresh_token = body['refresh_token']
+            print('token_response:\n' + str(body))
+            # convert expires_in to timestamp
+            expire_time = datetime.datetime.now() + datetime.timedelta(seconds=expires_in)
+
+            # expand the id_token to the encoded json object
+            # TODO signature validation if signature provided
+            # fix padding if not a multiple of 4
+            id_token = jwt.decode(id_token, verify=False)
+            print('id_token body:\n' + str(id_token))
+
+            sub = id_token['sub']
+            issuer = id_token['iss']
+            nonce = id_token['nonce']
+            if nonce != w['nonce']:
+                return HttpResponseNotAllowed('login request malformed or expired')
+            
+            # check if user exists
+            users = models.User.objects.filter(user_id=sub)
+            if len(users) == 0:
+                # try to fill username with email
+                if 'email' in id_token:
+                    user_name = id_token['email']
+                else:
+                    user_name = ''
+                    print('no email received for unrecognized user callback, filling user_name with blank string')
+                user = models.User(
+                        user_id=sub,
+                        user_name=user_name)
+                user.save()
+            else:
+                user = users[0]
+
+            token = models.Token(
+                    user_id=user,
+                    access_token=access_token,
+                    refresh_token=refresh_token,#TODO what if no refresh_token in response
+                    expires=expire_time,
+                    provider=provider,
+                    issuer=issuer,
+                    enabled=True
+            )
+            token.save()
+            
+            # create scopes if not exist:
+            for scope in w['scopes']:
+                s,created = models.Scope.objects.get_or_create(
+                        name=scope
+                )
+                token.scopes.add(s)
+
+            '''
+    token_id = models.IntegerField(primary_key=True)
+    user_id = models.ForeignKey('User', on_delete=models.CASCADE)
+    access_token = EncryptedTextField() # unknown size
+    refresh_token = EncryptedTextField() # unknown size
+    expires = models.DateTimeField()
+    provider = models.CharField(max_length=256)
+    issuer = models.CharField(max_length=256)
+    enabled = models.BooleanField(default=True)
+    scopes = models.ManyToManyField('Scope')
+            '''
+            return HttpResponse('Successfully authenticated user')
+            #return JsonResponse(status=200, data=token_response.content)
 
 
+    '''
+        Performs the request to the token endpoint and returns a response object from the requests library
+        
+        Token endpoint MUST be TLS, because client secret is sent combined with client id in the authorization header.
+        Client id is also sent as a parameter, because some APIs want that.
+    '''
+    def _token_request(self, token_endpoint, client_id, client_secret, code, redirect_uri):
+        
+        data = {
+            'grant_type': 'authorization_code',
+            'code': code,
+            'redirect_uri': redirect_uri,
+            'access_type': 'offline',
+            'client_id': client_id
+        }
+
+        # set up headers and send request. Return raw requests response
+        authorization = base64.b64encode((client_id + ':' + client_secret).encode('utf-8'))
+        headers = {
+                'Authorization': 'Basic ' + str(authorization.decode('utf-8')),
+                'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        response = requests.post(token_endpoint, headers=headers, data=data)
+        return response
+
+
+    def is_openid(self, provider):
+        return RedirectState.config['providers'][provider]['standard'] == 'OpenID Connect'
+    def is_oauth2(self, provider):
+        return RedirectState.config['providers'][provider]['standard'] == 'OAuth 2.0'
+    
     def exists_state(self, state):
         return self.get_from_state(state) != None
 
@@ -113,12 +254,14 @@ class RedirectHandler(object):
         if len(l) != 1: return None
         else: return l[0]
 
+    #@mutex(RedirectState.waiting_lock)
     def get_from_field(self, fieldname, fieldval):
         return [x for x in RedirectState.waiting if x[fieldname] == fieldval]
         
     '''
-        Not thread-safe, should only be used internally
+        Create a proper authorization url based on provided parameters
     '''
+    @mutex(RedirectState.cache_lock)
     def _generate_authorization_url(self, state, nonce, scopes, provider_tag):
         p = RedirectState.config['providers'][provider_tag]
         
@@ -126,7 +269,7 @@ class RedirectHandler(object):
         redirect_uri = RedirectState.config['redirect_uri']
 
         # get auth endpoint
-        if p['standard'] == 'OpenID Connect':
+        if self.is_openid(provider_tag):
             # openid allowed for endpoint and other value specification within metadata file
             meta_url = p['metadata_url']
             if provider_tag not in RedirectState.openid_metadata_cache:
@@ -147,7 +290,7 @@ class RedirectHandler(object):
             additional_params += '&access_type=offline'
             additional_params += '&login%20consent'
 
-        elif p['standard'] == 'OAuth 2.0':
+        elif self.is_oauth2(provider_tag):
             authorization_endpoint = p['authorization_endpoint']
             additional_params = ''
             if 'additional_params' in p:

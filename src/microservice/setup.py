@@ -15,6 +15,7 @@ setup(
         'pycrypto',
         'requests',
         'psycopg2',
+        'pyjwt'
     ],
     include_package_data=True,
 )

@@ -48,7 +48,7 @@ if 'SECRET_KEY' not in locals():
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['35.185.96.26']
+ALLOWED_HOSTS = ['test.commonsshare.org']
 
 
 # Application definition

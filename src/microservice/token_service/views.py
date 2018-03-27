@@ -50,17 +50,18 @@ def token(request):
         provider=provider
     )
     
-    if len(tokens) == 0:
+    if tokens.count() == 0:
         # no existing token matches these parameters
         handler = redirect_handler.RedirectHandler()
         url = handler.add(uid, scopes, provider)
         return JsonResponse(status=401, data={'authorization_url': url})
     
-    if len(matching) > 1:
+    if tokens.count() > 1:
         token = prune_duplicate_tokens(tokens)
     else:
         token = tokens[0]
-    return JsonResponse(status=200, data={'access_token': token})
+
+    return JsonResponse(status=200, data={'access_token': token.access_token})
 
 def prune_duplicate_tokens(tokens):
     pass    
@@ -74,4 +75,8 @@ def authcallback(request):
     # get provider corresponding to the state
     # exchange code for token response via that provider's token endpoint
     handler = redirect_handler.RedirectHandler()
-    handler.accept(request)
+    red_resp = handler.accept(request)
+    
+    # handler.accept returns a Django response or throws an exception
+    return red_resp
+
