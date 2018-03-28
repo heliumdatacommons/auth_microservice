@@ -15,7 +15,8 @@ setup(
         'pycrypto',
         'requests',
         'psycopg2',
-        'pyjwt'
+        'pyjwt',
+        'gunicorn'
     ],
     include_package_data=True,
 )

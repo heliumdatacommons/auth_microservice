@@ -4,7 +4,7 @@ import datetime
 import base64
 import jwt
 from urllib.parse import quote
-from threading import Lock
+from threading import Lock, Condition
 from . import util
 from django.http import HttpRequest
 from django.http import (
@@ -104,19 +104,19 @@ class RedirectHandler(object):
         return url
 
 
-    @mutex(RedirectState.waiting_lock)
+    #@mutex(RedirectState.waiting_lock)
     @mutex(RedirectState.blocking_lock)
     def block(self, uid, scopes, provider_tag):
         scopes = sorted(scopes)
         w = [x for x in RedirectState.waiting if x['uid'] == uid and sorted(x['scopes']) == sorted(scopes) and x['provider'] == provider_tag]
-        if len(w) == 0:
-            return None # no pending callback found, must re-authorize from scratch by calling add
+        #if len(w) == 0:
+        #    return None # no pending callback found, must re-authorize from scratch by calling add
         b = [x for x in RedirectState.blocking if x['uid'] == uid and sorted(x['scopes']) == sorted(scopes) and x['provider'] == provider_tag]
         if len(b) > 0:
             b = b[0]
             return b['lock']
         else:
-            lock = threading.Condition()
+            lock = Condition()
             RedirectState.blocking.append({
                 'uid': uid,
                 'scopes': scopes,
@@ -237,7 +237,7 @@ class RedirectHandler(object):
 
             # notify anyone blocking for this token criteria
             with RedirectState.blocking_lock:
-                b = [x for x in RedirectState.blocking if x['uid'] == uid and sorted(x['scopes']) == sorted(scopes) and x['provider'] == provider_tag] 
+                b = [x for x in RedirectState.blocking if x['uid'] == sub and sorted(x['scopes']) == sorted(scopes) and x['provider'] == provider_tag] 
                 # should only be one which matches, but just in case...
                 for observer in b:
                     b['lock'].notify_all()

@@ -120,6 +120,8 @@ with open('/etc/auth_microservice/admin.key', 'r') as f:
     if len(d) != ADMIN_KEY_LEN * 2:
         print('admin key file must contain a 64 byte hexidecimal string')
     ADMIN_KEY = d.encode('utf-8') # this remains as hex
+    import token_service.config
+    token_service.config.admin_key = ADMIN_KEY
     if DEBUG:
         print("ADMIN_KEY: " + str(ADMIN_KEY))
 

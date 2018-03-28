@@ -19,7 +19,9 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    #path('admin/', admin.site.urls),
+    path('admin/key', views.create_key, name='create_key'),
     path('token', views.token, name='token'),
     path('authcallback', views.authcallback, name='authcallback'),
 ]
+
+

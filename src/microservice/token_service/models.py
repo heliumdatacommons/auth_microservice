@@ -41,4 +41,6 @@ class Scope(models.Model):
     name = models.CharField(max_length=256)
 
 class API_key(models.Model):
-    key = models.CharField(max_length=256)
+    key = EncryptedTextField() # the key
+    owner = EncryptedTextField() # short string describing what this api key is used for/by
+    enabled = models.BooleanField(default=True)
