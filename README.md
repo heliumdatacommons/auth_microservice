@@ -3,13 +3,26 @@ Microservice which abstracts out OAuth2/OpenID exchanges and token management fr
 
 Installation:
 
+Create a service account and set up directories owned/used by it
+```
+$ sudo groupadd auth_microservice
+$ sudo useradd -m -g auth_microservice auth_microservice
+$ sudo mkdir /etc/auth_microservice
+$ sudo chown -R auth_microservice:auth_microservice /etc/auth_microservice
+```
+
+Switch to this account, all app-specific operations will be executed as the service account, which does not have admin privileges
+```
+$ sudo su - auth_microservice
+[auth_microservice] $ 
+```
+
 Install python 3.5 or greater. This example uses 3.6.
 
 ```
-$ git clone https://github.com/heliumdatacommons/auth_microservice.git
-$ cd auth_microservice/
-$ sudo mkdir /etc/auth_microservice
-$ sudo cp config/* /etc/auth_microservice
+[auth_microservice] $ git clone https://github.com/heliumdatacommons/auth_microservice.git
+[auth_microservice] $ cd auth_microservice/
+[auth_microservice] $ cp config/* /etc/auth_microservice
 ```
 
 Edit the files in /etc/auth_microservice, filling them in with appropriate values. These are loaded by the microservice on startup and are used as the initial admin api key, the database user/pass, and the database encryption key. Once filled in, remove the '.example' extension from each. The app expects (requires) the keys to be stored as 64 bytes of hexadecimal (representing 32 binary bytes). The admin key, the db key, and the db password should all be completely different. A cross-platform way to generate a 64 byte hex string is:
@@ -22,11 +35,44 @@ or without python
 
 If not created beforehand, the app will also create a file named '.django.key' in the django project root directory which is used as Django's secret key. This is used for sessions and Django hash, signing, and token seeding. For most cases it is fine to just let the app generate its own django key. The value of this should not be shared. If it is, just delete it and restart the app, and let it generate a new one. 
 
-Now install the app and test that it installed correctly
+Now install the app
 
 ```
-$ cd src/microservice
-$ python3.6 -m venv venv && source venv/bin/activate
-$ pip install .
-$ ./manage.py runserver 0.0.0.0:8080
+[auth_microservice] $ cd src/microservice
+[auth_microservice] $ python3.6 -m venv venv && source venv/bin/activate
+[auth_microservice] $ pip install .
+[auth_microservice] $ ./manage.py runserver 0.0.0.0:8080
+```
+
+There is database setup that must be performed as a user with sudo access.  First remember the password you set in db.credentials earlier, then run the following commands:
+```
+[auth_microservice] $ exit
+$ sudo bash /home/auth_microservice/auth_microservice/src/microservice/setup.sh <your-db-password>
+$ sudo su - auth_microservice
+[auth_microservice] $
+```
+
+Gunicorn can be used to run the server, though other python wsgi servers may work.  In-memory state information is critical to the functioning of this code and there is no shared memory set up at this point, so the wsgi server used to run the django app must be configured to spawn workers as threads, **not** processes.  For gunicorn, this means we can use the `--threads` option but not the `--workers` option.  We can cap the number of concurrent threads at some reasonable value.  If threads are not increased from the default of 1, blocking requests to this service will prevent other requests from being responded to, even if the other requests are non-blocking.
+
+```
+$ gunicorn --threads 100 microservice.wsgi
+```
+
+To expose this on an external interface, we can use any http server to wrap localhost 8000 (gunicorn default port).  For nginx, add the following to /etc/nginx/nginx.conf in the http block.  If a conflicting path is already in use on 443, the django app can be placed on a sub-path in nginx, like /auth:
+```
+ server {
+        listen       443 ssl;
+        listen       [::]:443 ssl;
+        server_name  test.commonsshare.org;
+        ssl_certificate /home/kferriter/test.crt;
+        ssl_certificate_key /home/kferriter/test.key;
+        root         /usr/share/nginx/html;
+        # Load configuration files for the default server block.
+        include /etc/nginx/default.d/*.conf;
+        location / {
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_pass http://localhost:8000;
+        }
+    }
 ```
