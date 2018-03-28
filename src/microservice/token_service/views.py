@@ -80,10 +80,12 @@ def token(request):
     if block:
         if isint(block):
             block = int(block)
+            if block < 0:
+                return HttpResponseBadRequest('if block param included, must be false or a positive integer')
         elif block.lower() == 'false':
             block = False
         else:
-            return HttpResponseBadRequest('if block param included, must be false or an integer')
+            return HttpResponseBadRequest('if block param included, must be false or a positive integer')
     
     if not uid:
         return HttpResponseBadRequest('missing uid')
