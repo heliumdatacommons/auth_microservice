@@ -24,11 +24,11 @@ class EncryptedTextField(models.TextField):
         return enc
 
 class User(models.Model):
-    user_id = models.CharField(max_length=256)
+    id = models.CharField(primary_key=True, max_length=256)
     user_name = models.CharField(max_length=256)
 
 class Token(models.Model):
-    user_id = models.ForeignKey('User', on_delete=models.CASCADE)
+    user = models.ForeignKey('User', on_delete=models.CASCADE)
     access_token = EncryptedTextField() # unknown size
     refresh_token = EncryptedTextField() # unknown size
     expires = models.DateTimeField()
