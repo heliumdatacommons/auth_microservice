@@ -11,7 +11,13 @@ def isint(s):
     except ValueError:
         return False
 
-
+def _get_tokens(uid, scopes, provider):
+    print('querying for tokens(uid,scopes,provider): ({},{},{})'.format(uid,scopes,provider))
+    return models.Token.objects.filter(
+        user__id=uid,
+        scopes__in=models.Scope.objects.filter(name__in=scopes),
+        provider=provider
+    )
 
 
 @require_http_methods(['GET'])
@@ -44,18 +50,26 @@ def token(request):
     if not provider:
         return HttpResponseBadRequest('missing provider')
     
-    tokens = models.Token.objects.filter(
-        user_id=uid,
-        scopes__in=models.Scope.objects.filter(name__in=scopes),
-        provider=provider
-    )
+    tokens = _get_tokens(uid, scopes, provider)
     
     if tokens.count() == 0:
         # no existing token matches these parameters
         handler = redirect_handler.RedirectHandler()
-        url = handler.add(uid, scopes, provider)
-        return JsonResponse(status=401, data={'authorization_url': url})
-    
+        if block:
+            #TODO block functionality
+            lock = handler.block(uid, scopes, provider)
+            with lock:
+                lock.wait(block)
+                # see if it was actually satisfied, or just woken up for timeout
+                tokens = _get_tokens(uid, scopes, provider)
+                if len(tokens) == 0:
+                    return HttpResponseNotAllowed('no token which meets required criteria')
+                # fall through
+        else:
+            # new authorization for this user and scopes
+            url = handler.add(uid, scopes, provider)
+            return JsonResponse(status=401, data={'authorization_url': url})
+
     if tokens.count() > 1:
         token = prune_duplicate_tokens(tokens)
     else:

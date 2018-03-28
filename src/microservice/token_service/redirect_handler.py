@@ -20,14 +20,21 @@ def mutex(lock):
     return decorated_func
 
 class RedirectState(object):
+    # for providers with OpenID Connect standard, cache the metadata in memory instead of re-requesting it
     openid_metadata_cache = {}
     cache_lock = Lock()
-
+    
+    # configuration loaded at startup
     config = {}
     config_lock = Lock()
-        
+    
+    # information on callbacks that are waiting to be received
     waiting = []
     waiting_lock = Lock()
+    
+    # list of blocking requests
+    blocking = []
+    blocking_lock = Lock()
 
 
 '''
@@ -69,6 +76,7 @@ class RedirectHandler(object):
     '''
     @mutex(RedirectState.waiting_lock)
     def add(self, uid, scopes, provider_tag):
+        scopes = sorted(scopes)
         # prevent unlikely chance that two waiting authorizations have same nonce or state
         # TODO change this to have in-memory cache of old nonce and state values. keep for N days
         while True:
@@ -88,11 +96,34 @@ class RedirectHandler(object):
                 'nonce': nonce,
                 'scopes': scopes,
                 'provider': provider_tag,
-                'ctime': datetime.datetime.now()
+                'url': url,
+                'ctime': datetime.datetime.now(),
             }
         )
 
         return url
+
+
+    @mutex(RedirectState.waiting_lock)
+    @mutex(RedirectState.blocking_lock)
+    def block(self, uid, scopes, provider_tag):
+        scopes = sorted(scopes)
+        w = [x for x in RedirectState.waiting if x['uid'] == uid and sorted(x['scopes']) == sorted(scopes) and x['provider'] == provider_tag]
+        if len(w) == 0:
+            return None # no pending callback found, must re-authorize from scratch by calling add
+        b = [x for x in RedirectState.blocking if x['uid'] == uid and sorted(x['scopes']) == sorted(scopes) and x['provider'] == provider_tag]
+        if len(b) > 0:
+            b = b[0]
+            return b['lock']
+        else:
+            lock = threading.Condition()
+            RedirectState.blocking.append({
+                'uid': uid,
+                'scopes': scopes,
+                'provider': provider_tag,
+                'lock': lock
+            })
+            return lock
 
 
     '''
@@ -159,7 +190,7 @@ class RedirectHandler(object):
                 return HttpResponseNotAllowed('login request malformed or expired')
             
             # check if user exists
-            users = models.User.objects.filter(user_id=sub)
+            users = models.User.objects.filter(id=sub)
             if len(users) == 0:
                 # try to fill username with email
                 if 'email' in id_token:
@@ -168,14 +199,14 @@ class RedirectHandler(object):
                     user_name = ''
                     print('no email received for unrecognized user callback, filling user_name with blank string')
                 user = models.User(
-                        user_id=sub,
+                        id=sub,
                         user_name=user_name)
                 user.save()
             else:
                 user = users[0]
 
             token = models.Token(
-                    user_id=user,
+                    user=user,
                     access_token=access_token,
                     refresh_token=refresh_token,#TODO what if no refresh_token in response
                     expires=expire_time,
@@ -194,7 +225,7 @@ class RedirectHandler(object):
 
             '''
     token_id = models.IntegerField(primary_key=True)
-    user_id = models.ForeignKey('User', on_delete=models.CASCADE)
+    user = models.ForeignKey('User', on_delete=models.CASCADE)
     access_token = EncryptedTextField() # unknown size
     refresh_token = EncryptedTextField() # unknown size
     expires = models.DateTimeField()
@@ -203,6 +234,15 @@ class RedirectHandler(object):
     enabled = models.BooleanField(default=True)
     scopes = models.ManyToManyField('Scope')
             '''
+
+            # notify anyone blocking for this token criteria
+            with RedirectState.blocking_lock:
+                b = [x for x in RedirectState.blocking if x['uid'] == uid and sorted(x['scopes']) == sorted(scopes) and x['provider'] == provider_tag] 
+                # should only be one which matches, but just in case...
+                for observer in b:
+                    b['lock'].notify_all()
+                    RedirectState.blocking.remove(observer)
+
             return HttpResponse('Successfully authenticated user')
             #return JsonResponse(status=200, data=token_response.content)
 
