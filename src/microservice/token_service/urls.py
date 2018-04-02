@@ -21,6 +21,7 @@ from . import views
 urlpatterns = [
     path('admin/key', views.create_key, name='create_key'),
     path('token', views.token, name='token'),
+    #path('tokenbynonce', views.token_by_nonce, name='token_by_url'),
     path('authcallback', views.authcallback, name='authcallback'),
 ]
 

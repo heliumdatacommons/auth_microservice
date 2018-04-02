@@ -76,6 +76,7 @@ class RedirectHandler(object):
     '''
     @mutex(RedirectState.waiting_lock)
     def add(self, uid, scopes, provider_tag):
+        print('adding callback waiter with uid {}, scopes {}, provider {}'.format(uid, scopes, provider_tag))
         scopes = sorted(scopes)
         # prevent unlikely chance that two waiting authorizations have same nonce or state
         # TODO change this to have in-memory cache of old nonce and state values. keep for N days
@@ -108,21 +109,45 @@ class RedirectHandler(object):
     @mutex(RedirectState.blocking_lock)
     def block(self, uid, scopes, provider_tag):
         scopes = sorted(scopes)
-        w = [x for x in RedirectState.waiting if x['uid'] == uid and sorted(x['scopes']) == sorted(scopes) and x['provider'] == provider_tag]
+        w = [x for x in RedirectState.waiting if x['uid'] == uid and list_subset(scopes, x['scopes']) and x['provider'] == provider_tag]
         #if len(w) == 0:
         #    return None # no pending callback found, must re-authorize from scratch by calling add
-        b = [x for x in RedirectState.blocking if x['uid'] == uid and sorted(x['scopes']) == sorted(scopes) and x['provider'] == provider_tag]
+        b = [x for x in RedirectState.blocking if x['uid'] == uid and list_subset(scopes, x['scopes']) and x['provider'] == provider_tag]
         if len(b) > 0:
             b = b[0]
             return b['lock']
         else:
             lock = Condition()
-            RedirectState.blocking.append({
+            observer = {
                 'uid': uid,
                 'scopes': scopes,
                 'provider': provider_tag,
-                'lock': lock
-            })
+                'lock': lock,
+                'nonce': b['nonce']
+            }
+            RedirectState.blocking.append(observer)
+            return lock
+
+    @mutex(RedirectState.blocking_lock)
+    def block_nonce(self, nonce):
+        w = [x for x in RedirectState.waiting if x['nonce'] == nonce]
+        if len(w) == 0:
+            return None # no pending callback found, must re-authorize from scratch by calling add
+        w = w[0]
+        b = [x for x in RedirectState.blocking if x['nonce'] == nonce]
+        if len(b) > 0:
+            b = b[0]
+            return b['lock']
+        else:
+            lock = Condition()
+            observer = {
+                'uid': w['uid'],
+                'scopes': w['scopes'],
+                'provider': w['provider'],
+                'lock': lock,
+                'nonce': nonce
+            }
+            RedirectState.blocking.append(observer)
             return lock
 
 
@@ -176,6 +201,7 @@ class RedirectHandler(object):
             print('token_response:\n' + str(body))
             # convert expires_in to timestamp
             expire_time = datetime.datetime.now() + datetime.timedelta(seconds=expires_in)
+            expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
 
             # expand the id_token to the encoded json object
             # TODO signature validation if signature provided
@@ -208,11 +234,12 @@ class RedirectHandler(object):
             token = models.Token(
                     user=user,
                     access_token=access_token,
-                    refresh_token=refresh_token,#TODO what if no refresh_token in response
+                    refresh_token=refresh_token, #TODO what if no refresh_token in response
                     expires=expire_time,
                     provider=provider,
                     issuer=issuer,
-                    enabled=True
+                    enabled=True,
+                    nonce=nonce
             )
             token.save()
             
@@ -235,12 +262,22 @@ class RedirectHandler(object):
     scopes = models.ManyToManyField('Scope')
             '''
 
-            # notify anyone blocking for this token criteria
+            # notify anyone blocking for (uid,scopes,provider) token criteria
             with RedirectState.blocking_lock:
-                b = [x for x in RedirectState.blocking if x['uid'] == sub and sorted(x['scopes']) == sorted(scopes) and x['provider'] == provider_tag] 
+                b = [x for x in RedirectState.blocking if x['uid'] == sub and list_subset(w['scopes'], x['scopes']) and x['provider'] == provider] 
                 # should only be one which matches, but just in case...
                 for observer in b:
-                    b['lock'].notify_all()
+                    with observer['lock']:
+                        #observer['access_token'] = access_token
+                        observer['lock'].notify_all()
+                    RedirectState.blocking.remove(observer)
+
+            # notify anyone blocking on the nonce
+            with RedirectState.blocking_lock:
+                b = [x for x in RedirectState.blocking if x['nonce'] == nonce]
+                for observer in b:
+                    with observer['lock']:
+                        observer['lock'].notify_all()
                     RedirectState.blocking.remove(observer)
 
             return HttpResponse('Successfully authenticated user')
@@ -348,3 +385,11 @@ class RedirectHandler(object):
             additional_params,
         )
         return url
+
+def list_subset(A, B):
+    if not A or not B:
+        return False
+    for a in A:
+        if a not in B:
+            return False
+    return True

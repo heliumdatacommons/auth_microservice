@@ -11,16 +11,16 @@ class EncryptedTextField(models.TextField):
 
     # invoked to convert db value to python value
     def from_db_value(self, value, expression, connection):
-        print('EncryptedTextField.from_db_value value: ' + str(value))
+        #print('EncryptedTextField.from_db_value value: ' + str(value))
         dec = self.crypt.decrypt(value)
-        print('EncryptedTextField.from_db_value({}) -> {}'.format(value, dec))
+        #print('EncryptedTextField.from_db_value({}) -> {}'.format(value, dec))
         return dec
 
     # invoked before saving python value to db value
     def get_prep_value(self, value):
-        print('EncryptedTextField.get_prep_value value: ' + str(value))
+        #print('EncryptedTextField.get_prep_value value: ' + str(value))
         enc = self.crypt.encrypt(value)
-        print('EncryptedTextField.get_prep_value({}) -> {}'.format(value, enc))
+        #print('EncryptedTextField.get_prep_value({}) -> {}'.format(value, enc))
         return enc
 
 class User(models.Model):
@@ -36,6 +36,7 @@ class Token(models.Model):
     issuer = models.CharField(max_length=256)
     enabled = models.BooleanField(default=True)
     scopes = models.ManyToManyField('Scope')
+    nonce = models.CharField(max_length=256)
 
 class Scope(models.Model):
     name = models.CharField(max_length=256)
