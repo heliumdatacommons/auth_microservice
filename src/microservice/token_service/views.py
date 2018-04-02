@@ -47,9 +47,9 @@ def _get_tokens(uid, scopes, provider):
         provider=provider
     )
 
-def _thread_block(lock, timeout):
-    with lock:
-        lock.wait(timeout)
+def _get_tokens_by_nonce(nonce):
+    print('querying for tokens(nonce): ({})'.format(nonce))
+    return models.Token.objects.filter(nonce=nonce)
 
 def _valid_api_key(request):
     authorization = request.META.get('HTTP_AUTHORIZATION')
@@ -66,19 +66,45 @@ def _valid_api_key(request):
                 return True
     return False
        
+'''
+No authentication required, will just return a login url
+'''
 @require_http_methods(['GET'])
-def token_by_nonce(request):
-    if not _valid_api_key(request):
-        return HttpResponseForbidden('must provide valid api key')
+def url(request):
+    scope = request.GET.get('scope')
+    provider = request.GET.get('provider')
+    if not scope:
+        print('scope: ' + str(scope))
+        return HttpResponseBadRequest('missing scope')
+    else:
+        scopes = scope.split(' ')
+        if len(scopes) == 0:
+            return HttpResponseBadRequest('no scopes provided')
+    
+    if not provider:
+        return HttpResponseBadRequest('missing provider')
+     
+    handler = redirect_handler.RedirectHandler()
+    url = handler.add(None, scopes, provider)
+    return JsonResponse(status=401, data={'authorization_url': url})
+
+
+@require_http_methods(['GET'])
+def subject_by_nonce(request):
     nonce = request.GET.get('nonce')
     block = request.GET.get('block')
-
-    # combine with other validation
-    block = int(block)
+    if block:
+        if isint(block):
+            block = int(block)
+            if block < 0:
+                return HttpResponseBadRequest('if block param included, must be false or a positive integer')
+        elif block.lower() == 'false':
+            block = False 
+        else:
+            return HttpResponseBadRequest('if block param included, must be false or a positive integer')
+    
     tokens = models.Token.objects.filter(nonce=nonce)
-    if tokens.count() > 0:
-        return JsonResponse(status=200, data={'access_token': token.access_token,'uid':token.user.id})
-    else: 
+    if tokens.count() == 0:
         handler = redirect_handler.RedirectHandler()
         lock = handler.block_nonce(nonce)
         if not lock:  #TODO clean this logic up
@@ -91,9 +117,9 @@ def token_by_nonce(request):
             tokens = models.Token.objects.filter(nonce=nonce)
             if tokens.count() == 0:
                 return HttpResponseNotFound('no token which meets required criteria')
-            else:
-                return JsonResponse(status=200, data={'access_token': token.access_token,'uid':token.user.id})
 
+    token = tokens[0]
+    return JsonResponse(status=200, data={'uid':token.user.id})
 
 @require_http_methods(['GET'])
 def token(request):
@@ -165,7 +191,7 @@ def token(request):
                 lock.wait(block)
                 # see if it was actually satisfied, or just woken up for timeout
                 if nonce:
-                    models.Token.objects.filter(nonce=nonce)
+                    tokens = models.Token.objects.filter(nonce=nonce)
                 else:
                     tokens = _get_tokens(uid, scopes, provider)
                 
@@ -189,9 +215,6 @@ def prune_duplicate_tokens(tokens):
 
 
 def authcallback(request):
-    #authorization_code = request.GET.get('code')
-    #state = request.GET.get('state')
-    
     # check state against active list
     # get provider corresponding to the state
     # exchange code for token response via that provider's token endpoint

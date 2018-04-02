@@ -20,8 +20,9 @@ from . import views
 
 urlpatterns = [
     path('admin/key', views.create_key, name='create_key'),
+    path('subject_by_nonce', views.subject_by_nonce, name='subject_by_nonce'),
     path('token', views.token, name='token'),
-    #path('tokenbynonce', views.token_by_nonce, name='token_by_url'),
+    path('authorize', views.url, name='url'),
     path('authcallback', views.authcallback, name='authcallback'),
 ]
 

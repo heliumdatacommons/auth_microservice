@@ -123,7 +123,7 @@ class RedirectHandler(object):
                 'scopes': scopes,
                 'provider': provider_tag,
                 'lock': lock,
-                'nonce': b['nonce']
+                'nonce': None
             }
             RedirectState.blocking.append(observer)
             return lock
@@ -205,7 +205,6 @@ class RedirectHandler(object):
 
             # expand the id_token to the encoded json object
             # TODO signature validation if signature provided
-            # fix padding if not a multiple of 4
             id_token = jwt.decode(id_token, verify=False)
             print('id_token body:\n' + str(id_token))
 
@@ -376,10 +375,10 @@ class RedirectHandler(object):
         else:
             raise RuntimeError('unknown provider standard: ' + p['standard'])
 
-        url = '{}?state={}&nonce={}&redirect_uri={}&client_id={}&{}'.format(
+        url = '{}?nonce={}&state={}&redirect_uri={}&client_id={}&{}'.format(
             authorization_endpoint,
-            state,
             nonce,
+            state,
             redirect_uri,
             client_id,
             additional_params,
