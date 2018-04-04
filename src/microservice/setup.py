@@ -16,7 +16,7 @@ setup(
         'requests',
         'psycopg2',
         'pyjwt',
-        'gunicorn'
+        'uwsgi',
     ],
     include_package_data=True,
 )

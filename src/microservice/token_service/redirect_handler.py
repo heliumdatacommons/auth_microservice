@@ -371,7 +371,7 @@ class RedirectHandler(object):
         else: return l[0]
 
     def get_pending_by_field(self, fieldname, fieldval):
-        # TODO update with native filtering
+        # TODO update with native encrypted filtering
         queryset = models.PendingCallback.objects.all()
         l = []
         for q in queryset:
@@ -391,20 +391,24 @@ class RedirectHandler(object):
         if self.is_openid(provider_tag):
             # openid allowed for endpoint and other value specification within metadata file
             meta_url = provider_config['metadata_url']
-            try:
-                cache_entry = models.OIDCMetadataCache.objects.get(provider=provider_tag)
-                meta = json.loads(cache_entry.value)
-            except ObjectDoesNotExist:
+            
+            cache = models.OIDCMetadataCache.objects.filter(provider=provider_tag)
+            meta = json.loads(cache_entry.value)
+            if cache.count() == 0 or (cache[0].retrieval_time + datetime.timedelta(hours=24)) < datetime.datetime.now():
+                # not cached, or cached entry is more than 1 day old 
                 response = requests.get(meta_url)
                 if response.status_code != 200:
                     raise RuntimeError('could not retrieve openid metadata, returned error: ' + str(response.status_code) + '\n' + response.content.decode('utf-8'))
                 content = response.content.decode('utf-8')
                 meta = json.loads(content)
                 # cache this metadata
-                cache_entry = models.OIDCMetadataCache.objects.create(
-                        provider=provider_tag,
-                        value=content
-                )
+                if cache_count() == 0:
+                    OIDCMetadataCache.objects.create(provider=provider_tag, value=content)
+                else:
+                    cache[0].value=content
+                    cahce[0].save()
+            else:
+                meta = json.loads(cache[0])
 
             authorization_endpoint = meta['authorization_endpoint']
             scope = ' '.join(scopes)
