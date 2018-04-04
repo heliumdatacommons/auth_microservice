@@ -41,11 +41,19 @@ def isint(s):
 
 def _get_tokens(uid, scopes, provider):
     print('querying for tokens(uid,scopes,provider): ({},{},{})'.format(uid,scopes,provider))
-    return models.Token.objects.filter(
+    # Django can do a filter using a subset operation for linked many-to-many, but not a filter using superset
+    # we need to find tokens for which the scopes is a superset of the scopes list
+    queryset = models.Token.objects.filter(
         user__id=uid,
-        scopes__in=models.Scope.objects.filter(name__in=scopes),
+        #scopes__in=models.Scope.objects.filter(name__in=scopes),
         provider=provider
     )
+    tokens = []
+    for t in queryset:
+        token_scope_names = [s.name for s in t.scopes.all()]
+        if util.list_subset(scopes, token_scope_names):
+            tokens.append(t)
+    return tokens
 
 def _get_tokens_by_nonce(nonce):
     print('querying for tokens(nonce): ({})'.format(nonce))
@@ -104,7 +112,7 @@ def subject_by_nonce(request):
             return HttpResponseBadRequest('if block param included, must be false or a positive integer')
     
     tokens = _get_tokens_by_nonce(nonce)
-    if tokens.count() == 0:
+    if len(tokens) == 0:
         handler = redirect_handler.RedirectHandler()
         lock = handler.block_nonce(nonce)
         if not lock:  #TODO clean this logic up
@@ -115,7 +123,7 @@ def subject_by_nonce(request):
             lock.wait(block)
             # see if it was actually satisfied, or just woken up for timeout
             tokens = _get_tokens_by_nonce(nonce)
-            if tokens.count() == 0:
+            if len(tokens) == 0:
                 return HttpResponseNotFound('no token which meets required criteria')
 
     token = tokens[0]
@@ -171,7 +179,7 @@ def token(request):
     else:
         tokens = _get_tokens(uid, scopes, provider)
     
-    if tokens.count() == 0:
+    if len(tokens) == 0:
         print('no tokens met criteria')
         # no existing token matches these parameters
         handler = redirect_handler.RedirectHandler()
@@ -194,14 +202,14 @@ def token(request):
                 else:
                     tokens = _get_tokens(uid, scopes, provider)
                 
-                if tokens.count() == 0:
+                if len(tokens) == 0:
                     return HttpResponseNotFound('no token which meets required criteria')
         else:
             # new authorization for this user and scopes
             url = handler.add(uid, scopes, provider)
             return JsonResponse(status=401, data={'authorization_url': url})
 
-    if tokens.count() > 1:
+    if len(tokens) > 1:
         token = tokens[0] # TODO
         #token = prune_duplicate_tokens(tokens)
     else:

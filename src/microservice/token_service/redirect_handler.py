@@ -15,8 +15,8 @@ from django.http import (
         JsonResponse,
         HttpResponseServerError)
 from django.core.exceptions import ObjectDoesNotExist
-
-from . import util
+from django.utils.timezone import now
+from .util import generate_nonce, list_subset
 from .config import Config
 
 
@@ -105,11 +105,11 @@ class RedirectHandler(object):
         # enforce uniqueness of nonces
         # TODO cleanup old ones after authorization url expiration threshold
         while True:
-            nonce = util.generate_nonce(64) # url safe 32byte (64byte hex)
+            nonce = generate_nonce(64) # url safe 32byte (64byte hex)
             if self.is_nonce_unique(nonce):
                 break
         while True:
-            state = util.generate_nonce(64)
+            state = generate_nonce(64)
             if self.is_nonce_unique(state):
                 break
 
@@ -150,7 +150,7 @@ class RedirectHandler(object):
 
         import tempfile
         tmpdir = tempfile.mkdtemp()
-        tmpfile = tmpdir + '/' + util.generate_nonce(32)
+        tmpfile = tmpdir + '/' + generate_nonce(32)
         lock = DomainSocketCondition(tmpfile)
 
         observer = models.BlockingRequest(
@@ -181,7 +181,7 @@ class RedirectHandler(object):
 
         import tempfile
         tmpdir = tempfile.mkdtemp()
-        tmpfile = tmpdir + '/' + util.generate_nonce(32)
+        tmpfile = tmpdir + '/' + generate_nonce(32)
         lock = DomainSocketCondition(tmpfile)
                 
         observer = models.BlockingRequest(
@@ -243,8 +243,8 @@ class RedirectHandler(object):
             refresh_token = body['refresh_token']
             print('token_response:\n' + str(body))
             # convert expires_in to timestamp
-            expire_time = datetime.datetime.now() + datetime.timedelta(seconds=expires_in)
-            expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
+            expire_time = now() + datetime.timedelta(seconds=expires_in)
+            #expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
 
             # expand the id_token to the encoded json object
             # TODO signature validation if signature provided
@@ -289,7 +289,7 @@ class RedirectHandler(object):
 
             # link scopes, create if not exist:
             for scope in w.scopes.all():
-                s,created = models.Scope.objects.get_or_create(name=scope)
+                s,created = models.Scope.objects.get_or_create(name=scope.name)
                 token.scopes.add(s)
 
             # notify anyone blocking for (uid,scopes,provider) token criteria
@@ -393,8 +393,7 @@ class RedirectHandler(object):
             meta_url = provider_config['metadata_url']
             
             cache = models.OIDCMetadataCache.objects.filter(provider=provider_tag)
-            meta = json.loads(cache_entry.value)
-            if cache.count() == 0 or (cache[0].retrieval_time + datetime.timedelta(hours=24)) < datetime.datetime.now():
+            if cache.count() == 0 or (cache[0].retrieval_time + datetime.timedelta(hours=24)) < now():
                 # not cached, or cached entry is more than 1 day old 
                 response = requests.get(meta_url)
                 if response.status_code != 200:
@@ -408,7 +407,7 @@ class RedirectHandler(object):
                     cache[0].value=content
                     cahce[0].save()
             else:
-                meta = json.loads(cache[0])
+                meta = json.loads(cache[0].value)
 
             authorization_endpoint = meta['authorization_endpoint']
             scope = ' '.join(scopes)
@@ -437,10 +436,3 @@ class RedirectHandler(object):
         )
         return url
 
-def list_subset(A, B):
-    if not A or not B:
-        return False
-    for a in A:
-        if a not in B:
-            return False
-    return True
