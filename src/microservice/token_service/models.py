@@ -36,12 +36,41 @@ class Token(models.Model):
     issuer = models.CharField(max_length=256)
     enabled = models.BooleanField(default=True)
     scopes = models.ManyToManyField('Scope')
-    nonce = models.CharField(max_length=256)
+    nonce = models.ManyToManyField('Nonce')
 
 class Scope(models.Model):
-    name = models.CharField(max_length=256)
+    name = models.CharField(max_length=256) # arbitrary but unlikely to be exceeded
 
 class API_key(models.Model):
     key = EncryptedTextField() # the key
     owner = EncryptedTextField() # short string describing what this api key is used for/by
     enabled = models.BooleanField(default=True)
+
+class Nonce(models.Model):
+    value = models.TextField() # no need to encrypt this, this is only being used to record past values
+    creation_time = models.DateTimeField(auto_now_add=True)
+
+'''
+Used for sharing state between processes because python can't run real threads
+'''
+class PendingCallback(models.Model):
+    uid = models.CharField(max_length=256) # same type as User.id
+    state = EncryptedTextField()
+    nonce = EncryptedTextField()
+    scopes = models.ManyToManyField('Scope')
+    provider = models.CharField(max_length=256) # config.json must limit
+    url = EncryptedTextField()
+    creation_time = models.DateTimeField(auto_now_add=True)
+
+class BlockingRequest(models.Model):
+    uid = models.CharField(max_length=256) # same type as User.id
+    nonce = EncryptedTextField()
+    scopes = models.ManyToManyField('Scope')
+    provider = models.CharField(max_length=256)
+    socket_file = models.CharField(max_length=256) # path to socket file
+    creation_time = models.DateTimeField(auto_now_add=True)
+
+class OIDCMetadataCache(models.Model):
+    value = models.TextField() # arbitrary length. careful about what is under metadata_url in config.json, could DoS
+    retrieval_time = models.DateTimeField(auto_now_add=True)
+    provider = models.CharField(max_length=256)

@@ -3,38 +3,64 @@ import json
 import datetime
 import base64
 import jwt
+import socket
+import os
+import stat
 from urllib.parse import quote
-from threading import Lock, Condition
-from . import util
-from django.http import HttpRequest
 from django.http import (
-        HttpResponse, HttpResponseNotAllowed, HttpResponseBadRequest, JsonResponse, HttpResponseServerError
-)
+        HttpRequest,
+        HttpResponse,
+        HttpResponseNotAllowed,
+        HttpResponseBadRequest,
+        JsonResponse,
+        HttpResponseServerError)
+from django.core.exceptions import ObjectDoesNotExist
 
-def mutex(lock):
-    def decorated_func(func):
-        def exclusive_func(*args, **kwargs):
-            with lock:
-                return func(*args, **kwargs)
-        return exclusive_func
-    return decorated_func
+from . import util
+from .config import Config
 
-class RedirectState(object):
-    # for providers with OpenID Connect standard, cache the metadata in memory instead of re-requesting it
-    openid_metadata_cache = {}
-    cache_lock = Lock()
+
+SOCK_DGRAM_LEN = 1024
+
+'''
+provides context management. only provides wait(int)
+'''
+class DomainSocketCondition(object):
+    def __init__(self, path):
+        print('initializing domain socket to: ' + path)
+        self.path = path
+    def acquire(self):
+        print('acquiring lock on domain socket: ' + self.path)
+        # check to see if the path is there
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.sock.bind(self.path)
+
+    def release(self):
+        print('releasing lock on domain socket: ' + self.path)
+        self.sock.close()
+        if stat.S_ISSOCK(os.stat(self.path).st_mode):
+            os.unlink(self.path)
     
-    # configuration loaded at startup
-    config = {}
-    config_lock = Lock()
+    def wait(self, seconds):
+        print('waiting for domain socket condition on: ' + self.path)
+        seconds = int(seconds) # let it fail
+        self.sock.settimeout(seconds)
+        data,address = self.sock.recvfrom(SOCK_DGRAM_LEN)
+        if data:
+            data = data.decode('utf-8') # check value, or not care
     
-    # information on callbacks that are waiting to be received
-    waiting = []
-    waiting_lock = Lock()
-    
-    # list of blocking requests
-    blocking = []
-    blocking_lock = Lock()
+    def notify(self, msg='SUCCESS'):
+        print('notifying observer on domain socket')
+        cli_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            cli_sock.sendto(msg, self.path)
+        finally:
+            cli_sock.close()
+
+    def __enter__(self):
+        self.acquire()
+    def __exit__(self, *args):
+        self.release()
 
 
 '''
@@ -49,106 +75,127 @@ class RedirectState(object):
 
     Does not yet support webfinger OpenID issuer discovery/specification.
 '''
-#TODO SSL Cert verification on all http requests. Force SSL on urls.
+#TODO SSL Cert verification on all https requests. Force SSL on urls.
 # Attempt to autodetect cacert location based on os, otherwise pull Mozilla's https://curl.haxx.se/ca/cacert.pem
 # also look at default ssl verification in requests package, and in pyoidc package, could rely on them
 class RedirectHandler(object):
-    # static vars
 
-    @mutex(RedirectState.config_lock)
-    def __init__(self, config=None):
-        if config:
-            RedirectState.config.update(config)
+    def __init__(self):
+        # TODO refactor so this lazy import is not needed
+        from . import models
+        globals()['models'] = models
 
         # timeout in seconds for authorization callbacks to be received
         # default is 300 (5 minutes)
-        if 'authorization_timeout' in RedirectState.config:
-            self.authorization_timeout = int(RedirectState.config['authorization_timeout'])
-        else:
-            self.authorization_timeout = 60 * 5
+        self.authorization_timeout = int(Config.get('authorization_timeout', 60*5))
 
-    
+
     '''
         uid: unique user identifier
         scopes: iterable of strings, used by OAuth2 and OpenID. If requesting authentication
                     via an OpenID provider, this must include 'openid'.
         provider_tag: matched against provider dictionary keys in the configuration loaded at startup
     '''
-    @mutex(RedirectState.waiting_lock)
     def add(self, uid, scopes, provider_tag):
         print('adding callback waiter with uid {}, scopes {}, provider {}'.format(uid, scopes, provider_tag))
         scopes = sorted(scopes)
-        # prevent unlikely chance that two waiting authorizations have same nonce or state
-        # TODO change this to have in-memory cache of old nonce and state values. keep for N days
+        if uid == None:
+            uid = ''
+
+        # enforce uniqueness of nonces
+        # TODO cleanup old ones after authorization url expiration threshold
         while True:
             nonce = util.generate_nonce(64) # url safe 32byte (64byte hex)
-            if not self.exists_nonce(nonce):
+            if self.is_nonce_unique(nonce):
                 break
         while True:
             state = util.generate_nonce(64)
-            if not self.exists_state(state):
+            if self.is_nonce_unique(state):
                 break
 
+        n_db = models.Nonce(value=nonce)
+        n_db.save()
+        s_db = models.Nonce(value=state)
+        s_db.save()
+
         url = self._generate_authorization_url(state, nonce, scopes, provider_tag)
-        RedirectState.waiting.append(
-            {
-                'uid': uid,
-                'state': state,
-                'nonce': nonce,
-                'scopes': scopes,
-                'provider': provider_tag,
-                'url': url,
-                'ctime': datetime.datetime.now(),
-            }
+        pending = models.PendingCallback(
+                uid=uid,
+                state=state,
+                nonce=nonce,
+                provider=provider_tag,
+                url=url,
         )
+        pending.save()
+        # create scopes if not exist:
+        for scope in scopes:
+            s,created = models.Scope.objects.get_or_create(name=scope)
+            pending.scopes.add(s)
+
+        pending.save()
 
         return url
 
 
-    #@mutex(RedirectState.waiting_lock)
-    @mutex(RedirectState.blocking_lock)
     def block(self, uid, scopes, provider_tag):
         scopes = sorted(scopes)
-        w = [x for x in RedirectState.waiting if x['uid'] == uid and list_subset(scopes, x['scopes']) and x['provider'] == provider_tag]
-        #if len(w) == 0:
-        #    return None # no pending callback found, must re-authorize from scratch by calling add
-        b = [x for x in RedirectState.blocking if x['uid'] == uid and list_subset(scopes, x['scopes']) and x['provider'] == provider_tag]
-        if len(b) > 0:
-            b = b[0]
-            return b['lock']
-        else:
-            lock = Condition()
-            observer = {
-                'uid': uid,
-                'scopes': scopes,
-                'provider': provider_tag,
-                'lock': lock,
-                'nonce': None
-            }
-            RedirectState.blocking.append(observer)
-            return lock
 
-    @mutex(RedirectState.blocking_lock)
-    def block_nonce(self, nonce):
-        w = [x for x in RedirectState.waiting if x['nonce'] == nonce]
-        if len(w) == 0:
+        pending_callbacks = []
+        p_db = models.PendingCallback.objects.all()
+        for p in p_db:
+            if p.uid == uid and list_subset(scopes, p.scopes.all()) and p.provider == provider_tag:
+                pending_callbacks.append(p)
+        if len(pending_callbacks) == 0:
             return None # no pending callback found, must re-authorize from scratch by calling add
-        w = w[0]
-        b = [x for x in RedirectState.blocking if x['nonce'] == nonce]
-        if len(b) > 0:
-            b = b[0]
-            return b['lock']
-        else:
-            lock = Condition()
-            observer = {
-                'uid': w['uid'],
-                'scopes': w['scopes'],
-                'provider': w['provider'],
-                'lock': lock,
-                'nonce': nonce
-            }
-            RedirectState.blocking.append(observer)
-            return lock
+
+        import tempfile
+        tmpdir = tempfile.mkdtemp()
+        tmpfile = tmpdir + '/' + util.generate_nonce(32)
+        lock = DomainSocketCondition(tmpfile)
+
+        observer = models.BlockingRequest(
+                uid=uid,
+                provider=provider,
+                socket_file=tmpfile,
+                nonce=None
+        )
+        observer.save()
+        for scope in scopes:
+            s_db = models.Scope.objects.get_or_create(name=scope.name)
+            observer.scopes.add(s_db)
+
+        observer.save()
+        return lock
+
+    def block_nonce(self, nonce):
+        pending_callbacks = []
+        p_db = models.PendingCallback.objects.all()
+        for p in p_db:
+            if p.nonce == nonce:
+                pending_callbacks.append(p)
+        if len(pending_callbacks) == 0:
+            return None # no pending callback found, must re-authorize from scratch by calling add
+        if len(pending_callbacks) != 1:
+            raise RuntimeError('multiple pending callbacks with same nonce, cannot proceed')
+        p = pending_callbacks[0]
+
+        import tempfile
+        tmpdir = tempfile.mkdtemp()
+        tmpfile = tmpdir + '/' + util.generate_nonce(32)
+        lock = DomainSocketCondition(tmpfile)
+                
+        observer = models.BlockingRequest(
+                uid=p.uid,
+                provider=p.provider,
+                socket_file=tmpfile,
+                nonce=nonce
+        )
+        observer.save()
+        for scope in p.scopes.all():
+            observer.scopes.add(scope)
+
+        observer.save()
+        return lock
 
 
     '''
@@ -159,12 +206,7 @@ class RedirectHandler(object):
 
         Returns an HttpResponse, with corresponding values filled in for client
     '''
-    #@mutex(RedirectState.waiting_lock)
-    #@mutex(RedirectState.config_lock)
-    #@mutex(RedirectState.cache_lock)
     def accept(self, request):
-        # TODO refactor so this lazy import is not needed
-        from . import models
         state = request.GET.get('state')
         code = request.GET.get('code')
         if not code:
@@ -172,19 +214,20 @@ class RedirectHandler(object):
         if not state:
             return HttpResponseBadRequest('callback state did not match expected')
         
-        if self.exists_state(state):
-            w = self.get_from_state(state)
-            if not w:
-                return HttpResponseNotAllowed('callback request from login is malformed, or authorization session expired')
-
-            provider = w['provider']
+        w = self.get_pending_by_state(state)
+        if not w:
+            return HttpResponseNotAllowed('callback request from login is malformed, or authorization session expired')
+        else:
+            provider = w.provider
             if self.is_openid(provider):
-                token_endpoint = RedirectState.openid_metadata_cache[provider]['token_endpoint']
+                meta = models.OIDCMetadataCache.objects.get(provider=provider).value
+                meta = json.loads(meta)
+                token_endpoint = meta['token_endpoint']
             else: # require non-openid providers to specify the token endpoint
-                token_endpoint = RedirectState.config['providers'][provider]['token_endpoint']
-            client_id = RedirectState.config['providers'][provider]['client_id']
-            client_secret = RedirectState.config['providers'][provider]['client_secret']
-            redirect_uri = RedirectState.config['redirect_uri']
+                token_endpoint = Config['providers'][provider]['token_endpoint']
+            client_id = Config['providers'][provider]['client_id']
+            client_secret = Config['providers'][provider]['client_secret']
+            redirect_uri = Config['redirect_uri']
             token_response = self._token_request(
                     token_endpoint,
                     client_id,
@@ -211,7 +254,7 @@ class RedirectHandler(object):
             sub = id_token['sub']
             issuer = id_token['iss']
             nonce = id_token['nonce']
-            if nonce != w['nonce']:
+            if nonce != w.nonce:
                 return HttpResponseNotAllowed('login request malformed or expired')
             
             # check if user exists
@@ -238,46 +281,42 @@ class RedirectHandler(object):
                     provider=provider,
                     issuer=issuer,
                     enabled=True,
-                    nonce=nonce
             )
             token.save()
-            
-            # create scopes if not exist:
-            for scope in w['scopes']:
-                s,created = models.Scope.objects.get_or_create(
-                        name=scope
-                )
+
+            n,created = models.Nonce.objects.get_or_create(value=nonce)
+            token.nonce.add(n)
+
+            # link scopes, create if not exist:
+            for scope in w.scopes.all():
+                s,created = models.Scope.objects.get_or_create(name=scope)
                 token.scopes.add(s)
 
-            '''
-    token_id = models.IntegerField(primary_key=True)
-    user = models.ForeignKey('User', on_delete=models.CASCADE)
-    access_token = EncryptedTextField() # unknown size
-    refresh_token = EncryptedTextField() # unknown size
-    expires = models.DateTimeField()
-    provider = models.CharField(max_length=256)
-    issuer = models.CharField(max_length=256)
-    enabled = models.BooleanField(default=True)
-    scopes = models.ManyToManyField('Scope')
-            '''
-
             # notify anyone blocking for (uid,scopes,provider) token criteria
-            with RedirectState.blocking_lock:
-                b = [x for x in RedirectState.blocking if x['uid'] == sub and list_subset(w['scopes'], x['scopes']) and x['provider'] == provider] 
-                # should only be one which matches, but just in case...
-                for observer in b:
-                    with observer['lock']:
-                        #observer['access_token'] = access_token
-                        observer['lock'].notify_all()
-                    RedirectState.blocking.remove(observer)
+            blocking_requests = []
+            b_db = models.BlockingRequest.objects.all()
+            for b in b_db:
+                if b.uid == user.id and list_subset(scopes, b.scopes) and b.provider == provider_tag:
+                    blocking_requests.append(b) 
+            # should only be one which matches, but just in case...
+            for b in blocking_requests:
+                cli_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                print('writing SUCCESS to domain socket: ' + b.socket_file)
+                cli_sock.sendto('SUCCESS'.encode('utf-8'), b.socket_file)
+                b.delete() # delete from db
 
-            # notify anyone blocking on the nonce
-            with RedirectState.blocking_lock:
-                b = [x for x in RedirectState.blocking if x['nonce'] == nonce]
-                for observer in b:
-                    with observer['lock']:
-                        observer['lock'].notify_all()
-                    RedirectState.blocking.remove(observer)
+            # notify anyone blocking for the nonce
+            blocking_requests = []
+            b_db = models.BlockingRequest.objects.all()
+            for b in b_db:
+                if b.nonce == nonce:
+                    blocking_requests.append(b)
+            # should only be one which matches, but just in case...
+            for b in blocking_requests:
+                cli_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                print('writing SUCCESS to domain socket: ' + b.socket_file)
+                cli_sock.sendto('SUCCESS'.encode('utf-8'), b.socket_file)
+                b.delete() # delete from db
 
             return HttpResponse('Successfully authenticated user')
             #return JsonResponse(status=200, data=token_response.content)
@@ -308,55 +347,64 @@ class RedirectHandler(object):
         response = requests.post(token_endpoint, headers=headers, data=data)
         return response
 
-
     def is_openid(self, provider):
-        return RedirectState.config['providers'][provider]['standard'] == 'OpenID Connect'
+        return Config['providers'][provider]['standard'] == 'OpenID Connect'
     def is_oauth2(self, provider):
-        return RedirectState.config['providers'][provider]['standard'] == 'OAuth 2.0'
+        return Config['providers'][provider]['standard'] == 'OAuth 2.0'
     
-    def exists_state(self, state):
-        return self.get_from_state(state) != None
+    def is_nonce_unique(self, nonce):
+        # TODO update with https://github.com/heliumdatacommons/auth_microservice/issues/4 when resolved
+        queryset = models.Nonce.objects.all()
+        for n in queryset:
+            if n.value == nonce:
+                return False
+        return True
 
-    def get_from_state(self, state):
-        l = self.get_from_field('state', state)
+    def get_pending_by_state(self, state):
+        l = self.get_pending_by_field('state', state)
         if len(l) != 1: return None
         else: return l[0]
 
-    def exists_nonce(self, nonce):
-        return self.get_from_nonce(nonce) != None
-
-    def get_from_nonce(self, nonce):
-        l = self.get_from_field('nonce', nonce)
+    def get_pending_by_nonce(self, nonce):
+        l = self.get_pending_by_field('nonce', nonce)
         if len(l) != 1: return None
         else: return l[0]
 
-    #@mutex(RedirectState.waiting_lock)
-    def get_from_field(self, fieldname, fieldval):
-        return [x for x in RedirectState.waiting if x[fieldname] == fieldval]
+    def get_pending_by_field(self, fieldname, fieldval):
+        # TODO update with native filtering
+        queryset = models.PendingCallback.objects.all()
+        l = []
+        for q in queryset:
+            if getattr(q, fieldname) == fieldval:
+                l.append(q)
+        return l
         
     '''
         Create a proper authorization url based on provided parameters
     '''
-    @mutex(RedirectState.cache_lock)
     def _generate_authorization_url(self, state, nonce, scopes, provider_tag):
-        p = RedirectState.config['providers'][provider_tag]
-        
-        client_id = p['client_id']
-        redirect_uri = RedirectState.config['redirect_uri']
+        provider_config = Config['providers'][provider_tag]
+        client_id = provider_config['client_id']
+        redirect_uri = Config['redirect_uri']
 
         # get auth endpoint
         if self.is_openid(provider_tag):
             # openid allowed for endpoint and other value specification within metadata file
-            meta_url = p['metadata_url']
-            if provider_tag not in RedirectState.openid_metadata_cache:
+            meta_url = provider_config['metadata_url']
+            try:
+                cache_entry = models.OIDCMetadataCache.objects.get(provider=provider_tag)
+                meta = json.loads(cache_entry.value)
+            except ObjectDoesNotExist:
                 response = requests.get(meta_url)
                 if response.status_code != 200:
-                    raise RuntimeError('could not retrieve openid metadata, returned error: ' + str(response.status_code))
-                meta = json.loads(response.content.decode('utf-8'))
+                    raise RuntimeError('could not retrieve openid metadata, returned error: ' + str(response.status_code) + '\n' + response.content.decode('utf-8'))
+                content = response.content.decode('utf-8')
+                meta = json.loads(content)
                 # cache this metadata
-                RedirectState.openid_metadata_cache[provider_tag] = meta
-            else:
-                meta = RedirectState.openid_metadata_cache[provider_tag]
+                cache_entry = models.OIDCMetadataCache.objects.create(
+                        provider=provider_tag,
+                        value=content
+                )
 
             authorization_endpoint = meta['authorization_endpoint']
             scope = ' '.join(scopes)
@@ -367,13 +415,13 @@ class RedirectHandler(object):
             additional_params += '&login%20consent'
 
         elif self.is_oauth2(provider_tag):
-            authorization_endpoint = p['authorization_endpoint']
+            authorization_endpoint = provider_config['authorization_endpoint']
             additional_params = ''
-            if 'additional_params' in p:
-                additional_params = p['additional_params']
+            if 'additional_params' in provider_config:
+                additional_params = provider_config['additional_params']
 
         else:
-            raise RuntimeError('unknown provider standard: ' + p['standard'])
+            raise RuntimeError('unknown provider standard: ' + provider_config['standard'])
 
         url = '{}?nonce={}&state={}&redirect_uri={}&client_id={}&{}'.format(
             authorization_endpoint,
