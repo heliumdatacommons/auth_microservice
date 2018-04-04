@@ -20,10 +20,14 @@ from . import views
 
 urlpatterns = [
     path('admin/key', views.create_key, name='create_key'),
+    # public
     path('subject_by_nonce', views.subject_by_nonce, name='subject_by_nonce'),
-    path('token', views.token, name='token'),
     path('authorize', views.url, name='url'),
     path('authcallback', views.authcallback, name='authcallback'),
+
+    # private (protected by api key)
+    path('token', views.token, name='token'),
+    #path('token_by_nonce', views.token_by_nonce, name='token_by_nonce'),
 ]
 
 

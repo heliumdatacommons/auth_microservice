@@ -49,7 +49,7 @@ def _get_tokens(uid, scopes, provider):
 
 def _get_tokens_by_nonce(nonce):
     print('querying for tokens(nonce): ({})'.format(nonce))
-    return models.Token.objects.filter(nonce=nonce)
+    return models.Token.objects.filter(nonce__value=nonce) # this nonce is not encrypted
 
 def _valid_api_key(request):
     authorization = request.META.get('HTTP_AUTHORIZATION')
@@ -103,7 +103,7 @@ def subject_by_nonce(request):
         else:
             return HttpResponseBadRequest('if block param included, must be false or a positive integer')
     
-    tokens = models.Token.objects.filter(nonce=nonce)
+    tokens = _get_tokens_by_nonce(nonce)
     if tokens.count() == 0:
         handler = redirect_handler.RedirectHandler()
         lock = handler.block_nonce(nonce)
@@ -114,7 +114,7 @@ def subject_by_nonce(request):
             print('waiting for {} seconds'.format(block))
             lock.wait(block)
             # see if it was actually satisfied, or just woken up for timeout
-            tokens = models.Token.objects.filter(nonce=nonce)
+            tokens = _get_tokens_by_nonce(nonce)
             if tokens.count() == 0:
                 return HttpResponseNotFound('no token which meets required criteria')
 
@@ -167,7 +167,7 @@ def token(request):
             return JsonResponse(status=401, data={'authorization_url': url})
 
     if nonce:
-        tokens = models.Token.objects.filter(nonce=nonce)
+        tokens = _get_tokens_by_nonce(nonce)
     else:
         tokens = _get_tokens(uid, scopes, provider)
     
@@ -177,7 +177,6 @@ def token(request):
         handler = redirect_handler.RedirectHandler()
         if block:
             print('attempting block as required by client')
-            #TODO block functionality
             if nonce:
                 lock = handler.block_nonce(nonce)
             else:
@@ -191,7 +190,7 @@ def token(request):
                 lock.wait(block)
                 # see if it was actually satisfied, or just woken up for timeout
                 if nonce:
-                    tokens = models.Token.objects.filter(nonce=nonce)
+                    tokens = _get_tokens_by_nonce(nonce)
                 else:
                     tokens = _get_tokens(uid, scopes, provider)
                 
