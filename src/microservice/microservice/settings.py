@@ -146,6 +146,15 @@ with open('/etc/auth_microservice/config.json', 'r') as f:
     if 'providers' not in d:
         raise RuntimeError('providers missing from config')
     import token_service.config
+    for tag in d['providers']:
+        p = d['providers'][tag]
+        if 'standard' not in p:
+            raise RuntimeError('provider config did not specify a standard')
+        if p['standard'] == 'OAuth 2.0':
+            assert('authorization_endpoint' in p)
+            assert('token_endpoint' in p)
+        if p['standard'] == 'OpenID Connect':
+            assert('metadata_url' in p)
     token_service.config.Config = d
 
 

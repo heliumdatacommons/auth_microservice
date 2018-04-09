@@ -134,7 +134,7 @@ class RedirectHandler(object):
 
         pending.save()
 
-        return url
+        return url, nonce
 
 
     def block(self, uid, scopes, provider_tag):
@@ -236,61 +236,13 @@ class RedirectHandler(object):
                     redirect_uri)
             if token_response.status_code not in [200,302]:
                 return HttpResponseServerError('could not acquire token from provider' + str(vars(token_response)))
-            body = json.loads(token_response.content)
-            id_token = body['id_token']
-            access_token = body['access_token']
-            expires_in = body['expires_in']
-            refresh_token = body['refresh_token']
-            print('token_response:\n' + str(body))
-            # convert expires_in to timestamp
-            expire_time = now() + datetime.timedelta(seconds=expires_in)
-            #expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
 
-            # expand the id_token to the encoded json object
-            # TODO signature validation if signature provided
-            id_token = jwt.decode(id_token, verify=False)
-            print('id_token body:\n' + str(id_token))
-
-            sub = id_token['sub']
-            issuer = id_token['iss']
-            nonce = id_token['nonce']
-            if nonce != w.nonce:
-                return HttpResponseNotAllowed('login request malformed or expired')
-            
-            # check if user exists
-            users = models.User.objects.filter(id=sub)
-            if len(users) == 0:
-                # try to fill username with email
-                if 'email' in id_token:
-                    user_name = id_token['email']
-                else:
-                    user_name = ''
-                    print('no email received for unrecognized user callback, filling user_name with blank string')
-                user = models.User(
-                        id=sub,
-                        user_name=user_name)
-                user.save()
+            (success,msg,user,token,nonce) = self._handle_token_response(w, token_response)
+            if not success:
+                return HttpResponseServerError(msg + ':' + token_response)
             else:
-                user = users[0]
-
-            token = models.Token(
-                    user=user,
-                    access_token=access_token,
-                    refresh_token=refresh_token, #TODO what if no refresh_token in response
-                    expires=expire_time,
-                    provider=provider,
-                    issuer=issuer,
-                    enabled=True,
-            )
-            token.save()
-
-            n,created = models.Nonce.objects.get_or_create(value=nonce)
-            token.nonce.add(n)
-
-            # link scopes, create if not exist:
-            for scope in w.scopes.all():
-                s,created = models.Scope.objects.get_or_create(name=scope.name)
-                token.scopes.add(s)
+                w.delete()
+            
 
             # notify anyone blocking for (uid,scopes,provider) token criteria
             blocking_requests = []
@@ -320,6 +272,73 @@ class RedirectHandler(object):
 
             return HttpResponse('Successfully authenticated user')
             #return JsonResponse(status=200, data=token_response.content)
+    
+    '''
+    Called upon successful exhance of an authorization code for an access token. Takes a requests.models.Response object
+    and w, a token_service.models.PendingCallback object
+    returns (bool,message) or raises exception.
+    '''
+    def _handle_token_response(self, w, response):
+        body = json.loads(response.content)
+        id_token = body['id_token']
+        access_token = body['access_token']
+        expires_in = body['expires_in']
+        refresh_token = body['refresh_token']
+        print('token_response:\n' + str(body))
+        # convert expires_in to timestamp
+        expire_time = now() + datetime.timedelta(seconds=expires_in)
+        #expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
+
+        # expand the id_token to the encoded json object
+        # TODO signature validation if signature provided
+        id_token = jwt.decode(id_token, verify=False)
+        print('id_token body:\n' + str(id_token))
+
+        sub = id_token['sub']
+        issuer = id_token['iss']
+        nonce = id_token['nonce']
+        if nonce != w.nonce:
+            return (False,'login request malformed or expired',None,None,None)
+            #return HttpResponseNotAllowed('login request malformed or expired')
+
+        # check if user exists
+        users = models.User.objects.filter(id=sub)
+        if len(users) == 0:
+            print('creating new user with id: {}'.format(sub))
+            # try to fill username with email
+            if 'email' in id_token:
+                user_name = id_token['email']
+            else:
+                user_name = ''
+                print('no email received for unrecognized user callback, filling user_name with blank string')
+            user = models.User(
+                    id=sub,
+                    user_name=user_name)
+            user.save()
+        else:
+            print('user recognized with id: {}'.format(sub))
+            user = users[0]
+
+        token = models.Token(
+                user=user,
+                access_token=access_token,
+                refresh_token=refresh_token, #TODO what if no refresh_token in response
+                expires=expire_time,
+                provider=w.provider,
+                issuer=issuer,
+                enabled=True,
+        )
+        token.save()
+
+        n,created = models.Nonce.objects.get_or_create(value=nonce)
+        token.nonce.add(n)
+
+        # link scopes, create if not exist:
+        for scope in w.scopes.all():
+            s,created = models.Scope.objects.get_or_create(name=scope.name)
+            token.scopes.add(s)
+        
+        return (True,'',user,token,nonce)
 
 
     '''
@@ -346,6 +365,42 @@ class RedirectHandler(object):
         }
         response = requests.post(token_endpoint, headers=headers, data=data)
         return response
+
+    def _refresh_token(self, token_model):
+        provider_config = Config['providers'][token_model.provider]
+        if self.is_openid(token_model.provider):
+            meta = self._get_or_update_OIDC_cache(token_model.provider)
+            token_endpoint = meta['token_endpoint']
+        elif self.is_oauth2(token_model.provider):
+            token_endpoint = provider_config['token_endpoint']
+        else:
+            raise RuntimeError('could not refresh unrecognized provider standard')
+        
+        data = {
+            'grant_type': 'refresh_token',
+            'refresh_token': token_model.refresh_token
+        }
+        client_id = provider_config['client_id']
+        client_secret = provider_config['client_secret']
+        authorization = base64.b64encode((client_id + ':' + client_secret).encode('utf-8'))
+        headers = {
+                'Authorization': 'Basic ' + str(authorization.decode('utf-8')),
+                'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        response = requests.post(token_endpoint, headers=headers, data=data)
+        if response.status_code != 200:
+            raise RuntimeError('could not refresh token, provider returned: {}\n{}'.format(response.status_code,response.content))
+        else:
+            content = response.content.decode('utf-8')
+            obj = json.loads(content)
+            if 'access_token' not in obj or 'expires_in' not in obj or 'token_type' not in obj:
+                raise RuntimeError('refresh response missing required fields: {}\n{}'.format(response.status, str(obj)))
+            token_model.expires = now() + datetime.timedelta(seconds=int(obj['expires_in']))
+            token_model.access_token = obj['access_token']
+            if 'refresh_token' in obj:
+                token_model.refresh_token = obj['refresh_token']
+            token_model.save()
+            return token_model
 
     def is_openid(self, provider):
         return Config['providers'][provider]['standard'] == 'OpenID Connect'
@@ -378,7 +433,29 @@ class RedirectHandler(object):
             if getattr(q, fieldname) == fieldval:
                 l.append(q)
         return l
-        
+    
+    def _get_or_update_OIDC_cache(self, provider_tag):
+        provider_config = Config['providers'][provider_tag]
+        meta_url = provider_config['metadata_url']
+        cache = models.OIDCMetadataCache.objects.filter(provider=provider_tag)
+        if cache.count() == 0 or (cache[0].retrieval_time + datetime.timedelta(hours=24)) < now():
+            # not cached, or cached entry is more than 1 day old 
+            response = requests.get(meta_url)
+            if response.status_code != 200:
+                raise RuntimeError('could not retrieve openid metadata, returned error: ' 
+                        + str(response.status_code) + '\n' + response.content.decode('utf-8'))
+            content = response.content.decode('utf-8')
+            meta = json.loads(content)
+            # cache this metadata
+            if cache.count() == 0: # create
+                OIDCMetadataCache.objects.create(provider=provider_tag, value=content)
+            else: # update
+                cache[0].value=content
+                cache[0].save()
+        else:
+            meta = json.loads(cache[0].value)
+        return meta
+ 
     '''
         Create a proper authorization url based on provided parameters
     '''
@@ -392,22 +469,7 @@ class RedirectHandler(object):
             # openid allowed for endpoint and other value specification within metadata file
             meta_url = provider_config['metadata_url']
             
-            cache = models.OIDCMetadataCache.objects.filter(provider=provider_tag)
-            if cache.count() == 0 or (cache[0].retrieval_time + datetime.timedelta(hours=24)) < now():
-                # not cached, or cached entry is more than 1 day old 
-                response = requests.get(meta_url)
-                if response.status_code != 200:
-                    raise RuntimeError('could not retrieve openid metadata, returned error: ' + str(response.status_code) + '\n' + response.content.decode('utf-8'))
-                content = response.content.decode('utf-8')
-                meta = json.loads(content)
-                # cache this metadata
-                if cache_count() == 0:
-                    OIDCMetadataCache.objects.create(provider=provider_tag, value=content)
-                else:
-                    cache[0].value=content
-                    cahce[0].save()
-            else:
-                meta = json.loads(cache[0].value)
+            meta = self._get_or_update_OIDC_cache(provider_tag)
 
             authorization_endpoint = meta['authorization_endpoint']
             scope = ' '.join(scopes)
@@ -436,3 +498,71 @@ class RedirectHandler(object):
         )
         return url
 
+'''
+Almost everything is the same for Globus, except when user authorizes scopes which span resource servers, there
+is an access token returned per-server, instead of one which encompasses all of the scopes.
+'''
+class GlobusRedirectHandler(RedirectHandler):
+    '''
+    allow RedirectHandler to do everything except the parsing and handling of the token response
+    '''
+    def _handle_token_response(self, w, request):
+        body = json.loads(token_response.content)
+        id_token = body['id_token']
+        access_token = body['access_token']
+        expires_in = body['expires_in']
+        refresh_token = body['refresh_token']
+        print('token_response:\n' + str(body))
+        
+
+        # convert expires_in to timestamp
+        expire_time = now() + datetime.timedelta(seconds=expires_in)
+        #expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
+
+        # expand the id_token to the encoded json object
+        # TODO signature validation if signature provided
+        id_token = jwt.decode(id_token, verify=False)
+        print('id_token body:\n' + str(id_token))
+
+        sub = id_token['sub']
+        issuer = id_token['iss']
+        nonce = id_token['nonce']
+        if nonce != w.nonce:
+            return (False,'login request malformed or expired')
+            #return HttpResponseNotAllowed('login request malformed or expired')
+
+        # check if user exists
+        users = models.User.objects.filter(id=sub)
+        if len(users) == 0:
+            # try to fill username with email
+            if 'email' in id_token:
+                user_name = id_token['email']
+            else:
+                user_name = ''
+                print('no email received for unrecognized user callback, filling user_name with blank string')
+            user = models.User(
+                    id=sub,
+                    user_name=user_name)
+            user.save()
+        else:
+            user = users[0]
+
+        token = models.Token(
+                user=user,
+                access_token=access_token,
+                refresh_token=refresh_token, #TODO what if no refresh_token in response
+                expires=expire_time,
+                provider=provider,
+                issuer=issuer,
+                enabled=True,
+        )
+        token.save()
+
+        n,created = models.Nonce.objects.get_or_create(value=nonce)
+        token.nonce.add(n)
+
+        # link scopes, create if not exist:
+        for scope in w.scopes.all():
+            s,created = models.Scope.objects.get_or_create(name=scope.name)
+            token.scopes.add(s)
+        return (True,'',user,token,nonce)

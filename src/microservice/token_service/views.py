@@ -6,6 +6,8 @@ from django.http import (
         HttpResponseNotFound,
         HttpResponseForbidden)
 from django.views.decorators.http import require_http_methods
+from django.utils.timezone import now
+
 from . import models
 from . import redirect_handler
 from . import config
@@ -38,6 +40,7 @@ def isint(s):
         return True
     except ValueError:
         return False
+
 
 def _get_tokens(uid, scopes, provider):
     print('querying for tokens(uid,scopes,provider): ({},{},{})'.format(uid,scopes,provider))
@@ -73,7 +76,7 @@ def _valid_api_key(request):
             if db_key.key == received_key:
                 return True
     return False
-       
+
 '''
 No authentication required, will just return a login url
 '''
@@ -93,8 +96,8 @@ def url(request):
         return HttpResponseBadRequest('missing provider')
      
     handler = redirect_handler.RedirectHandler()
-    url = handler.add(None, scopes, provider)
-    return JsonResponse(status=401, data={'authorization_url': url})
+    url, nonce = handler.add(None, scopes, provider)
+    return JsonResponse(status=200, data={'authorization_url': url, 'nonce': nonce})
 
 
 @require_http_methods(['GET'])
@@ -110,10 +113,9 @@ def subject_by_nonce(request):
             block = False 
         else:
             return HttpResponseBadRequest('if block param included, must be false or a positive integer')
-    
+    handler = redirect_handler.RedirectHandler()
     tokens = _get_tokens_by_nonce(nonce)
     if len(tokens) == 0:
-        handler = redirect_handler.RedirectHandler()
         lock = handler.block_nonce(nonce)
         if not lock:  #TODO clean this logic up
             print('no lock returned from handler.block')
@@ -127,6 +129,8 @@ def subject_by_nonce(request):
                 return HttpResponseNotFound('no token which meets required criteria')
 
     token = tokens[0]
+    if token.expires <= now():
+        token = handler._refresh_token(token)
     return JsonResponse(status=200, data={'uid':token.user.id})
 
 @require_http_methods(['GET'])
@@ -171,8 +175,8 @@ def token(request):
         if not uid:
             print('request received with no uid specified, will only generate url')
             handler = redirect_handler.RedirectHandler()
-            url = handler.add(uid, scopes, provider)
-            return JsonResponse(status=401, data={'authorization_url': url})
+            url,nonce = handler.add(uid, scopes, provider)
+            return JsonResponse(status=401, data={'authorization_url': url, 'nonce': nonce})
 
     if nonce:
         tokens = _get_tokens_by_nonce(nonce)
@@ -206,15 +210,18 @@ def token(request):
                     return HttpResponseNotFound('no token which meets required criteria')
         else:
             # new authorization for this user and scopes
-            url = handler.add(uid, scopes, provider)
-            return JsonResponse(status=401, data={'authorization_url': url})
+            url,nonce = handler.add(uid, scopes, provider)
+            return JsonResponse(status=401, data={'authorization_url': url, 'nonce': nonce})
 
     if len(tokens) > 1:
         token = tokens[0] # TODO
         #token = prune_duplicate_tokens(tokens)
     else:
         token = tokens[0]
-
+    
+    if token.expires <= now():
+        token = handler._refresh_token(token)
+    
     return JsonResponse(status=200, data={'access_token': token.access_token,'uid':token.user.id})
 
 def prune_duplicate_tokens(tokens):
