@@ -236,8 +236,12 @@ class RedirectHandler(object):
                     redirect_uri)
             if token_response.status_code not in [200,302]:
                 return HttpResponseServerError('could not acquire token from provider' + str(vars(token_response)))
-
-            (success,msg,user,token,nonce) = self._handle_token_response(w, token_response)
+            
+            if provider == 'globus':
+                (success,msg,user,token,nonce) = GlobusRedirectHandler()._handle_token_response(w, token_response)
+            else:
+                (success,msg,user,token,nonce) = self._handle_token_response(w, token_response)
+            
             if not success:
                 return HttpResponseServerError(msg + ':' + token_response)
             else:
@@ -448,7 +452,7 @@ class RedirectHandler(object):
             meta = json.loads(content)
             # cache this metadata
             if cache.count() == 0: # create
-                OIDCMetadataCache.objects.create(provider=provider_tag, value=content)
+                models.OIDCMetadataCache.objects.create(provider=provider_tag, value=content)
             else: # update
                 cache[0].value=content
                 cache[0].save()
@@ -506,63 +510,70 @@ class GlobusRedirectHandler(RedirectHandler):
     '''
     allow RedirectHandler to do everything except the parsing and handling of the token response
     '''
-    def _handle_token_response(self, w, request):
-        body = json.loads(token_response.content)
-        id_token = body['id_token']
-        access_token = body['access_token']
-        expires_in = body['expires_in']
-        refresh_token = body['refresh_token']
-        print('token_response:\n' + str(body))
+    def _handle_token_response(self, w, response):
+        body = json.loads(response.content)
+        tokens = []
+        user = token = nonce = None
+        # check to see if top level token is for openid
+        if 'openid' in body['scope'] and 'id_token' in body:
+            success,msg,user,token,nonce = super()._handle_token_response(w, response)
+            tokens.append(token)
         
+        # Globus token response does not conform to the OIDC spec (v1.0 section 3.1.3.3).
+        # On a token callback it also sticks the state value into the root level json object
+        # This is actually pretty nice and should be part of the OAuth2.0 spec
+        # For us, if this was not an openid callback, associate the state value with the token as the nonce
+        if not nonce and 'state' in body:
+            nonce = body['state']
 
-        # convert expires_in to timestamp
-        expire_time = now() + datetime.timedelta(seconds=expires_in)
-        #expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
+        if 'other_tokens' in body and len(body['other_tokens']) > 0:
+            for other_token in body['other_tokens']:
+                access_token = other_token['access_token']
+                expires_in = other_token['expires_in']
+                refresh_token = other_token['refresh_token']
+                provider = w.provider
 
-        # expand the id_token to the encoded json object
-        # TODO signature validation if signature provided
-        id_token = jwt.decode(id_token, verify=False)
-        print('id_token body:\n' + str(id_token))
+                print('other_token body:\n' + str(other_token))
 
-        sub = id_token['sub']
-        issuer = id_token['iss']
-        nonce = id_token['nonce']
-        if nonce != w.nonce:
-            return (False,'login request malformed or expired')
-            #return HttpResponseNotAllowed('login request malformed or expired')
+                # convert expires_in to timestamp
+                expire_time = now() + datetime.timedelta(seconds=expires_in)
 
-        # check if user exists
-        users = models.User.objects.filter(id=sub)
-        if len(users) == 0:
-            # try to fill username with email
-            if 'email' in id_token:
-                user_name = id_token['email']
-            else:
-                user_name = ''
-                print('no email received for unrecognized user callback, filling user_name with blank string')
-            user = models.User(
-                    id=sub,
-                    user_name=user_name)
-            user.save()
-        else:
-            user = users[0]
+                # check if user exists
+                if not user: # no openid token was in this response
+                    users = models.User.objects.filter(id=w.uid)
+                    if len(users) > 0:
+                        user = users[0]
+                    else:
+                        # only thing we have here is the subject id, so use sub id as the user_name too
+                        user_name = w.uid
+                        print('unrecognized user for Globus token response without an id_token field,'
+                                + 'filling user_name with the same as the id')
+                        user = models.User.objects.create(
+                            id=w.uid,
+                            user_name=user_name)
+                        user.save()
 
-        token = models.Token(
-                user=user,
-                access_token=access_token,
-                refresh_token=refresh_token, #TODO what if no refresh_token in response
-                expires=expire_time,
-                provider=provider,
-                issuer=issuer,
-                enabled=True,
-        )
-        token.save()
+                token = models.Token(
+                    user=user,
+                    access_token=access_token,
+                    refresh_token=refresh_token, #TODO what if no refresh_token in response
+                    expires=expire_time,
+                    provider=provider,
+                    issuer=issuer,
+                    enabled=True,
+                )
+                token.save()
 
-        n,created = models.Nonce.objects.get_or_create(value=nonce)
-        token.nonce.add(n)
+                
+                n,created = models.Nonce.objects.get_or_create(value=nonce)
+                token.nonce.add(n)
 
-        # link scopes, create if not exist:
-        for scope in w.scopes.all():
-            s,created = models.Scope.objects.get_or_create(name=scope.name)
-            token.scopes.add(s)
+                # link scopes, create if not exist:
+                #for scope in w.scopes.all():
+                if isinstance(other_token['scope'], str):
+                    s,created = models.Scope.objects.get_or_create(name=other_token['scope'])
+                    token.scopes.add(s)
+                tokens.append(token)
+
         return (True,'',user,token,nonce)
+

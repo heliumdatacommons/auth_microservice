@@ -1,7 +1,7 @@
 import os
 import math
 import binascii
-
+import hashlib
 
 '''
     Returns a random hex string with provided length. URL safe.
@@ -21,3 +21,10 @@ def list_subset(A, B):
         if a not in B:
             return False
     return True
+
+def sha256(s):
+    if not isinstance(s, str):
+        return None
+    hasher = hashlib.sha256()
+    hasher.update(s.encode('utf-8'))
+    return hasher.hexdigest()

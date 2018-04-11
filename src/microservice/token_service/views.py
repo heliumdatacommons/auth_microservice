@@ -29,7 +29,9 @@ def create_key(request):
     if not owner:
         return HttpResponseBadRequest('must provider owner string')
     key = util.generate_nonce(64)
-    db_entry = models.API_key(key=key, owner=owner)
+    key_hash = util.sha256(key)
+    print('new key: {}, hash: {}'.format(key, key_hash))
+    db_entry = models.API_key(key_hash=key_hash, owner=owner)
     db_entry.save()
     return JsonResponse(status=200, data={'key': key})
 
@@ -45,7 +47,7 @@ def isint(s):
 def _get_tokens(uid, scopes, provider):
     print('querying for tokens(uid,scopes,provider): ({},{},{})'.format(uid,scopes,provider))
     # Django can do a filter using a subset operation for linked many-to-many, but not a filter using superset
-    # we need to find tokens for which the scopes is a superset of the scopes list
+    # we need to find tokens whose scopes are a superset of the scopes list being requested
     queryset = models.Token.objects.filter(
         user__id=uid,
         #scopes__in=models.Scope.objects.filter(name__in=scopes),
@@ -64,16 +66,19 @@ def _get_tokens_by_nonce(nonce):
 
 def _valid_api_key(request):
     authorization = request.META.get('HTTP_AUTHORIZATION')
-    print('_valid_api_key authorization: ' + str(authorization))
     if not authorization:
         return False
-    m = re.match(r'^Basic (\w{64})', authorization) 
+    #print('_valid_api_key authorization: ' + str(authorization))
+    m = re.match(r'^Basic\W+(\w{64})', authorization) 
     if m:
         received_key = m.group(1)
+        received_hash = util.sha256(received_key)
+        print('_valid_api_key_authorization received_hash: ' + received_hash)
         # key fields are encrypted, so we cannot natively filter, must be decrypted first
         keys = models.API_key.objects.filter(enabled=True)
         for db_key in keys:
-            if db_key.key == received_key:
+            if db_key.key_hash == received_hash:
+                print('valid')
                 return True
     return False
 
@@ -182,11 +187,11 @@ def token(request):
         tokens = _get_tokens_by_nonce(nonce)
     else:
         tokens = _get_tokens(uid, scopes, provider)
-    
+
+    handler = redirect_handler.RedirectHandler()
     if len(tokens) == 0:
         print('no tokens met criteria')
         # no existing token matches these parameters
-        handler = redirect_handler.RedirectHandler()
         if block:
             print('attempting block as required by client')
             if nonce:
