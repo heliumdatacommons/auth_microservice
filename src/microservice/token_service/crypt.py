@@ -15,9 +15,14 @@ class Crypt(object):
 
     def encrypt(self, plaintext):
         # pad PKSC#7 (https://www.ietf.org/rfc/rfc2315.txt)
-        pad_n = (AES.block_size - (len(plaintext) % AES.block_size))
+        if plaintext:
+            pad_n = (AES.block_size - (len(plaintext) % AES.block_size))
+        else:
+            plaintext = ''
+            pad_n = AES.block_size
+
         plaintext += pad_n * chr(pad_n)
-        
+
         #print('crypt.encrypt plaintext: ' + str(plaintext))
 
         iv = self.random(AES.block_size)
