@@ -10,7 +10,6 @@ from urllib.parse import quote
 from django.http import (
         HttpRequest,
         HttpResponse,
-        HttpResponseNotAllowed,
         HttpResponseBadRequest,
         HttpResponseRedirect,
         JsonResponse,
@@ -104,6 +103,9 @@ class RedirectHandler(object):
             uid = ''
         if return_to == None:
             return_to = ''
+        else:
+            # santize input TODO what to do if no protocol specified
+            return_to = return_to.strip('/')
 
         # enforce uniqueness of nonces
         # TODO cleanup old ones after authorization url expiration threshold
@@ -220,7 +222,7 @@ class RedirectHandler(object):
         
         w = self.get_pending_by_state(state)
         if not w:
-            return HttpResponseNotAllowed('callback request from login is malformed, or authorization session expired')
+            return HttpResponseBadRequest('callback request from login is malformed, or authorization session expired')
         else:
             provider = w.provider
             if self.is_openid(provider):
@@ -329,7 +331,6 @@ class RedirectHandler(object):
         nonce = id_token['nonce']
         if nonce != w.nonce:
             return (False,'login request malformed or expired',None,None,None)
-            #return HttpResponseNotAllowed('login request malformed or expired')
 
         # check if user exists
         users = models.User.objects.filter(id=sub)

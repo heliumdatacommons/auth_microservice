@@ -1,6 +1,5 @@
 import re
 from django.http import (
-        HttpResponseNotAllowed,
         HttpResponseBadRequest,
         JsonResponse,
         HttpResponseNotFound,
@@ -67,19 +66,27 @@ def _get_tokens_by_nonce(nonce):
 def _valid_api_key(request):
     authorization = request.META.get('HTTP_AUTHORIZATION')
     if not authorization:
+        print('NO HTTP_AUTHORIZATION')
         return False
-    #print('_valid_api_key authorization: ' + str(authorization))
-    m = re.match(r'^Basic\W+(\w{64})', authorization) 
+    m = re.match(r'^Basic\W+(\w{64})', authorization)
     if m:
         received_key = m.group(1)
         received_hash = util.sha256(received_key)
-        print('_valid_api_key_authorization received_hash: ' + received_hash)
-        # key fields are encrypted, so we cannot natively filter, must be decrypted first
-        keys = models.API_key.objects.filter(enabled=True)
-        for db_key in keys:
-            if db_key.key_hash == received_hash:
-                print('valid')
-                return True
+        #print('_valid_api_key received_hash: ' + received_hash)
+        # keys are unencrypted hashes
+        keys = models.API_key.objects.filter(key_hash=received_hash)
+        # for debugging purposes only, checking for multiple entries with same key hash
+        if keys.count() > 1:
+            print('FOUND MULTIPLE MATCHING KEY ENTRIES')
+            for db_key in keys:
+                print('found hash: ' + db_key.key_hash + ' owner: ' + db_key.owner)
+        if keys.count() > 0:
+            print('_valid_api_key authenticated key [{}] for owner [{}]'.format(received_key, keys[0].owner))
+            return True
+        if keys.count() == 0:
+            print('_valid_api_key received invalid api key: ' + received_key)
+    else:
+        print('malformed Authorization Basic header: ' + str(authorization))
     return False
 
 '''
@@ -89,6 +96,7 @@ No authentication required, will just return a login url
 def url(request):
     scope = request.GET.get('scope')
     provider = request.GET.get('provider')
+    return_to = request.GET.get('return_to')
     if not scope:
         print('scope: ' + str(scope))
         return HttpResponseBadRequest('missing scope')
@@ -101,10 +109,10 @@ def url(request):
         return HttpResponseBadRequest('missing provider')
 
     handler = redirect_handler.RedirectHandler()
-    if _valid_api_key(request) and request.GET.get('return_to'):
-        return_to = request.GET.get('return_to')
+    if _valid_api_key(request) and return_to:
         url, nonce = handler.add(None, scopes, provider, return_to)
     else:
+        if return_to: print('invalid api key, ignoring return_to param')
         url, nonce = handler.add(None, scopes, provider)
     return JsonResponse(status=200, data={'authorization_url': url, 'nonce': nonce})
 
