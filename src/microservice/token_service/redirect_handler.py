@@ -12,11 +12,12 @@ from django.http import (
         HttpResponse,
         HttpResponseNotAllowed,
         HttpResponseBadRequest,
+        HttpResponseRedirect,
         JsonResponse,
         HttpResponseServerError)
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils.timezone import now
-from .util import generate_nonce, list_subset
+from .util import generate_nonce, list_subset, is_sock
 from .config import Config
 
 
@@ -96,11 +97,13 @@ class RedirectHandler(object):
                     via an OpenID provider, this must include 'openid'.
         provider_tag: matched against provider dictionary keys in the configuration loaded at startup
     '''
-    def add(self, uid, scopes, provider_tag):
-        print('adding callback waiter with uid {}, scopes {}, provider {}'.format(uid, scopes, provider_tag))
+    def add(self, uid, scopes, provider_tag, return_to=None):
+        print('adding callback waiter with uid {}, scopes {}, provider {}, return_to {}'.format(uid, scopes, provider_tag, return_to))
         scopes = sorted(scopes)
         if uid == None:
             uid = ''
+        if return_to == None:
+            return_to = ''
 
         # enforce uniqueness of nonces
         # TODO cleanup old ones after authorization url expiration threshold
@@ -125,6 +128,7 @@ class RedirectHandler(object):
                 nonce=nonce,
                 provider=provider_tag,
                 url=url,
+                return_to=return_to
         )
         pending.save()
         # create scopes if not exist:
@@ -244,22 +248,30 @@ class RedirectHandler(object):
             
             if not success:
                 return HttpResponseServerError(msg + ':' + token_response)
-            else:
-                w.delete()
-            
 
             # notify anyone blocking for (uid,scopes,provider) token criteria
             blocking_requests = []
             b_db = models.BlockingRequest.objects.all()
             for b in b_db:
-                if b.uid == user.id and list_subset(scopes, b.scopes) and b.provider == provider_tag:
+                blocking_scopes = [s.name for s in b.scopes.all()]
+                waiting_scopes = [s.name for s in w.scopes.all()]
+                # if the scopes that a client is blocking for is a subset of the scopes from this callback
+                if b.uid == user.id and list_subset(blocking_scopes, waiting_scopes) and b.provider == provider:
                     blocking_requests.append(b) 
             # should only be one which matches, but just in case...
             for b in blocking_requests:
-                cli_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-                print('writing SUCCESS to domain socket: ' + b.socket_file)
-                cli_sock.sendto('SUCCESS'.encode('utf-8'), b.socket_file)
+                if is_sock(b.socket_file):
+                    cli_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                    print('writing SUCCESS to domain socket: ' + b.socket_file)
+                    try:
+                        cli_sock.sendto('SUCCESS'.encode('utf-8'), b.socket_file)
+                    except ConnectionRefusedError:
+                        print('no one listening to socket')
+                        os.unlink(b.socket_file)
+                else:
+                    print('orphaned blocking entry found: ' + b.socket_file)
                 b.delete() # delete from db
+                
 
             # notify anyone blocking for the nonce
             blocking_requests = []
@@ -269,14 +281,28 @@ class RedirectHandler(object):
                     blocking_requests.append(b)
             # should only be one which matches, but just in case...
             for b in blocking_requests:
-                cli_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-                print('writing SUCCESS to domain socket: ' + b.socket_file)
-                cli_sock.sendto('SUCCESS'.encode('utf-8'), b.socket_file)
+                if is_sock(b.socket_file):
+                    cli_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                    print('writing SUCCESS to domain socket: ' + b.socket_file)
+                    try:
+                        cli_sock.sendto('SUCCESS'.encode('utf-8'), b.socket_file)
+                    except ConnectionRefusedError:
+                        print('no one listening to socket')
+                        os.unlink(b.socket_file)
+                else:
+                    print('orphaned blocking entry found: ' + b.socket_file)
                 b.delete() # delete from db
 
-            return HttpResponse('Successfully authenticated user')
-            #return JsonResponse(status=200, data=token_response.content)
-    
+            if w.return_to:
+                ret = HttpResponseRedirect(
+                        '{}/?access_token={}&uid={}'.format(w.return_to, token.access_token, user.id))
+            else:
+                ret = HttpResponse('Successfully authenticated user')
+
+            w.delete()
+            return ret
+
+
     '''
     Called upon successful exhance of an authorization code for an access token. Takes a requests.models.Response object
     and w, a token_service.models.PendingCallback object
@@ -472,7 +498,7 @@ class RedirectHandler(object):
         if self.is_openid(provider_tag):
             # openid allowed for endpoint and other value specification within metadata file
             meta_url = provider_config['metadata_url']
-            
+
             meta = self._get_or_update_OIDC_cache(provider_tag)
 
             authorization_endpoint = meta['authorization_endpoint']
@@ -509,6 +535,8 @@ is an access token returned per-server, instead of one which encompasses all of 
 class GlobusRedirectHandler(RedirectHandler):
     '''
     allow RedirectHandler to do everything except the parsing and handling of the token response
+    this also differs from RedirectHandler._handle_token_response because there can be multiple tokens in the callback
+    request. This method returns as the token return object, the top level token in the response, but also stores the 'other_tokens'
     '''
     def _handle_token_response(self, w, response):
         body = json.loads(response.content)
@@ -517,63 +545,89 @@ class GlobusRedirectHandler(RedirectHandler):
         # check to see if top level token is for openid
         if 'openid' in body['scope'] and 'id_token' in body:
             success,msg,user,token,nonce = super()._handle_token_response(w, response)
+            if not success:
+                return (success,msg,user,token,nonce)
             tokens.append(token)
-        
-        # Globus token response does not conform to the OIDC spec (v1.0 section 3.1.3.3).
-        # On a token callback it also sticks the state value into the root level json object
-        # This is actually pretty nice and should be part of the OAuth2.0 spec
-        # For us, if this was not an openid callback, associate the state value with the token as the nonce
-        if not nonce and 'state' in body:
-            nonce = body['state']
+        else:
+            # check if user exists
+            if not user: # no openid token was in this response
+                users = models.User.objects.filter(id=w.uid)
+                if len(users) > 0:
+                    user = users[0]
+                else:
+                    # only thing we have here is the subject id, so use sub id as the user_name too
+                    user_name = w.uid
+                    print('unrecognized user for Globus token response without an id_token field,'
+                            + 'filling user_name with the same as the id')
+                    user = models.User.objects.create(
+                            id=w.uid,
+                            user_name=user_name)
+                    user.save()
+            # For globus, on a token callback it also puts the state value into the root level
+            # json object. This is actually pretty nice and should be part of the OAuth2.0 spec.
+            # However substituting the state value for the nonce (in OAuth2 callbacks, not OIDC)
+            # will break our ability to let clients block based on the initial nonce parameter
+            # sent in the original authorization url. Use the nonce in the PendingCallback object
+            # and link the tokens to it, even if the nonce was not returned to us in the token
+            # callback from globus
+            if not nonce:
+                nonce = w.nonce
+
+            success,msg,user,token,nonce = self._handle_token_body(user, w, nonce, body)
+            if not success:
+                return (success,msg,user,token,nonce)
+            tokens.append(token)
+
+        # check if user exists
+        if not user: # no openid token was in this response
+            users = models.User.objects.filter(id=w.uid)
+            if len(users) > 0:
+                user = users[0]
+            else:
+                # only thing we have here is the subject id, so use sub id as the user_name too
+                user_name = w.uid
+                print('unrecognized user for Globus token response without an id_token field,'
+                        + 'filling user_name with the same as the id')
+                user = models.User.objects.create(
+                        id=w.uid,
+                        user_name=user_name)
+                user.save()
 
         if 'other_tokens' in body and len(body['other_tokens']) > 0:
             for other_token in body['other_tokens']:
-                access_token = other_token['access_token']
-                expires_in = other_token['expires_in']
-                refresh_token = other_token['refresh_token']
-                provider = w.provider
-
-                print('other_token body:\n' + str(other_token))
-
-                # convert expires_in to timestamp
-                expire_time = now() + datetime.timedelta(seconds=expires_in)
-
-                # check if user exists
-                if not user: # no openid token was in this response
-                    users = models.User.objects.filter(id=w.uid)
-                    if len(users) > 0:
-                        user = users[0]
-                    else:
-                        # only thing we have here is the subject id, so use sub id as the user_name too
-                        user_name = w.uid
-                        print('unrecognized user for Globus token response without an id_token field,'
-                                + 'filling user_name with the same as the id')
-                        user = models.User.objects.create(
-                            id=w.uid,
-                            user_name=user_name)
-                        user.save()
-
-                token = models.Token(
-                    user=user,
-                    access_token=access_token,
-                    refresh_token=refresh_token, #TODO what if no refresh_token in response
-                    expires=expire_time,
-                    provider=provider,
-                    issuer=issuer,
-                    enabled=True,
-                )
-                token.save()
-
-                
-                n,created = models.Nonce.objects.get_or_create(value=nonce)
-                token.nonce.add(n)
-
-                # link scopes, create if not exist:
-                #for scope in w.scopes.all():
-                if isinstance(other_token['scope'], str):
-                    s,created = models.Scope.objects.get_or_create(name=other_token['scope'])
-                    token.scopes.add(s)
+                success,msg,user,token,nonce = self._handle_token_body(user, w, nonce, other_token)
                 tokens.append(token)
+                
+        return (True,'',user,tokens[0],nonce)
 
-        return (True,'',user,token,nonce)
+    def _handle_token_body(self, user, w, nonce, token_dict):
+        print('handling globus token body:\n' + str(token_dict))
+        access_token = token_dict['access_token']
+        expires_in = token_dict['expires_in']
+        refresh_token = token_dict['refresh_token']
+        provider = w.provider
+
+        # convert expires_in to timestamp
+        expire_time = now() + datetime.timedelta(seconds=expires_in)
+
+        token = models.Token(
+                user=user,
+                access_token=access_token,
+                refresh_token=refresh_token, #TODO what if no refresh_token in response
+                expires=expire_time,
+                provider=provider,
+                issuer=token_dict['resource_server'],
+                enabled=True,
+        )
+        token.save()
+
+        n,created = models.Nonce.objects.get_or_create(value=nonce)
+        token.nonce.add(n)
+
+        # link scopes, create if not exist:
+        #for scope in w.scopes.all():
+        if isinstance(token_dict['scope'], str):
+            s,created = models.Scope.objects.get_or_create(name=token_dict['scope'])
+            token.scopes.add(s)
+        return (True, '', user, token, nonce)
 

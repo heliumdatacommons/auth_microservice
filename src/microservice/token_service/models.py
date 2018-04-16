@@ -60,6 +60,7 @@ class PendingCallback(models.Model):
     scopes = models.ManyToManyField('Scope')
     provider = models.CharField(max_length=256) # config.json must limit
     url = EncryptedTextField()
+    return_to = EncryptedTextField()
     creation_time = models.DateTimeField(auto_now_add=True)
 
 class BlockingRequest(models.Model):

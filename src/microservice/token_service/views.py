@@ -99,9 +99,13 @@ def url(request):
     
     if not provider:
         return HttpResponseBadRequest('missing provider')
-     
+
     handler = redirect_handler.RedirectHandler()
-    url, nonce = handler.add(None, scopes, provider)
+    if _valid_api_key(request) and request.GET.get('return_to'):
+        return_to = request.GET.get('return_to')
+        url, nonce = handler.add(None, scopes, provider, return_to)
+    else:
+        url, nonce = handler.add(None, scopes, provider)
     return JsonResponse(status=200, data={'authorization_url': url, 'nonce': nonce})
 
 
@@ -143,15 +147,16 @@ def token(request):
     # api key authentication
     if not _valid_api_key(request):
         return HttpResponseForbidden('must provide valid api key')
-    
-    print('GET params:')
-    for k,v in request.GET.items():
-        print(k + ":" + v)
+
+    #print('GET params:')
+    #for k,v in request.GET.items():
+    #    print(k + ":" + v)
     uid = request.GET.get('uid')
     scope = request.GET.get('scope')
     provider = request.GET.get('provider')
     block = request.GET.get('block')
     nonce = request.GET.get('nonce')
+    return_to = request.GET.get('return_to')
 
     # validate
     if block:
@@ -163,7 +168,7 @@ def token(request):
             block = False
         else:
             return HttpResponseBadRequest('if block param included, must be false or a positive integer')
-    
+
     # nonce takes precedence over (scope,provider,uid) combination
     if not nonce:
         if not scope:
@@ -180,7 +185,7 @@ def token(request):
         if not uid:
             print('request received with no uid specified, will only generate url')
             handler = redirect_handler.RedirectHandler()
-            url,nonce = handler.add(uid, scopes, provider)
+            url,nonce = handler.add(uid, scopes, provider, return_to)
             return JsonResponse(status=401, data={'authorization_url': url, 'nonce': nonce})
 
     if nonce:
@@ -210,12 +215,12 @@ def token(request):
                     tokens = _get_tokens_by_nonce(nonce)
                 else:
                     tokens = _get_tokens(uid, scopes, provider)
-                
+
                 if len(tokens) == 0:
                     return HttpResponseNotFound('no token which meets required criteria')
         else:
             # new authorization for this user and scopes
-            url,nonce = handler.add(uid, scopes, provider)
+            url,nonce = handler.add(uid, scopes, provider, return_to)
             return JsonResponse(status=401, data={'authorization_url': url, 'nonce': nonce})
 
     if len(tokens) > 1:
@@ -226,8 +231,12 @@ def token(request):
     
     if token.expires <= now():
         token = handler._refresh_token(token)
-    
-    return JsonResponse(status=200, data={'access_token': token.access_token,'uid':token.user.id})
+
+    if return_to:
+        return HttpResponseRedirect(
+                    '{}/?access_token={}&uid={}'.format(w.return_to, token.access_token, user.id))
+    else:
+        return JsonResponse(status=200, data={'access_token': token.access_token,'uid':token.user.id})
 
 def prune_duplicate_tokens(tokens):
     pass    

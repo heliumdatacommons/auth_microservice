@@ -1,4 +1,5 @@
 import os
+import stat
 import math
 import binascii
 import hashlib
@@ -28,3 +29,14 @@ def sha256(s):
     hasher = hashlib.sha256()
     hasher.update(s.encode('utf-8'))
     return hasher.hexdigest()
+
+def is_sock(path):
+    if not path or not isinstance(path, str):
+        return False
+    try:
+        file_stat = os.stat(path)
+    except FileNotFoundError as e:
+        return False
+
+    return stat.S_ISSOCK(file_stat.st_mode)
+
