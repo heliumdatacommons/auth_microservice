@@ -26,6 +26,7 @@ class EncryptedTextField(models.TextField):
 class User(models.Model):
     id = models.CharField(primary_key=True, max_length=256)
     user_name = models.CharField(max_length=256)
+    name = EncryptedTextField()
 
 class Token(models.Model):
     user = models.ForeignKey('User', on_delete=models.CASCADE)

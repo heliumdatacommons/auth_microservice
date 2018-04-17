@@ -241,8 +241,8 @@ def token(request):
         token = handler._refresh_token(token)
 
     if return_to:
-        return HttpResponseRedirect(
-                    '{}/?access_token={}&uid={}'.format(w.return_to, token.access_token, user.id))
+        return HttpResponseRedirect(util.build_redirect_url(w.return_to, token))
+
     else:
         return JsonResponse(status=200, data={'access_token': token.access_token,'uid':token.user.id})
 

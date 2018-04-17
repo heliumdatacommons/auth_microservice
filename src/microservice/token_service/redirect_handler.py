@@ -16,7 +16,7 @@ from django.http import (
         HttpResponseServerError)
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils.timezone import now
-from .util import generate_nonce, list_subset, is_sock
+from .util import generate_nonce, list_subset, is_sock, build_redirect_url
 from .config import Config
 
 
@@ -296,8 +296,7 @@ class RedirectHandler(object):
                 b.delete() # delete from db
 
             if w.return_to:
-                ret = HttpResponseRedirect(
-                        '{}/?access_token={}&uid={}'.format(w.return_to, token.access_token, user.id))
+                ret = HttpResponseRedirect(build_redirect_url(w.return_to, token))
             else:
                 ret = HttpResponse('Successfully authenticated user')
 
@@ -337,14 +336,21 @@ class RedirectHandler(object):
         if len(users) == 0:
             print('creating new user with id: {}'.format(sub))
             # try to fill username with email
-            if 'email' in id_token:
+            if 'preferred_username' in id_token:
+                user_name = id_token['preferred_username']
+            elif 'email' in id_token:
                 user_name = id_token['email']
             else:
                 user_name = ''
-                print('no email received for unrecognized user callback, filling user_name with blank string')
+                print('no email or username received for unrecognized user callback, filling user_name with blank string')
+            if 'name' in id_token:
+                name = id_token['name']
+            else:
+                name = ''
             user = models.User(
                     id=sub,
-                    user_name=user_name)
+                    user_name=user_name,
+                    name=name)
             user.save()
         else:
             print('user recognized with id: {}'.format(sub))

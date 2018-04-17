@@ -3,6 +3,9 @@ import stat
 import math
 import binascii
 import hashlib
+import base64
+import json
+from urllib.parse import quote
 
 '''
     Returns a random hex string with provided length. URL safe.
@@ -39,4 +42,23 @@ def is_sock(path):
         return False
 
     return stat.S_ISSOCK(file_stat.st_mode)
+
+def build_redirect_url(base_url, token):
+    #access_token, uid, user_name=None, first_name=None, last_name=None):
+    user = token.user
+    url = '{}/?access_token={}'.format(base_url, token.access_token)
+    url += '&uid=' + quote(user.id)
+    url += '&user_name=' + quote(user.user_name)
+    url += '&name=' + quote(user.name)
+
+    #body = {
+    #        'access_token': token.access_token,
+    #        'uid': user.id,
+    #        'user_name': user.user_name,
+    #        'name': user.name
+    #}
+    #body_encoded = base64.b64encode(json.dumps(body))
+    #url = '{}/?context={}'.format(base_url, body_encoded)
+
+    return url
 
