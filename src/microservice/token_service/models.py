@@ -64,13 +64,14 @@ class PendingCallback(models.Model):
     return_to = EncryptedTextField()
     creation_time = models.DateTimeField(auto_now_add=True)
 
-class BlockingRequest(models.Model):
-    uid = models.CharField(max_length=256) # same type as User.id
-    nonce = EncryptedTextField()
-    scopes = models.ManyToManyField('Scope')
-    provider = models.CharField(max_length=256)
-    socket_file = models.CharField(max_length=256) # path to socket file
-    creation_time = models.DateTimeField(auto_now_add=True)
+# TODO remove, obsolete
+#class BlockingRequest(models.Model):
+#    uid = models.CharField(max_length=256) # same type as User.id
+#    nonce = EncryptedTextField()
+#    scopes = models.ManyToManyField('Scope')
+#    provider = models.CharField(max_length=256)
+#    socket_file = models.CharField(max_length=256) # path to socket file
+#    creation_time = models.DateTimeField(auto_now_add=True)
 
 class OIDCMetadataCache(models.Model):
     value = models.TextField() # arbitrary length. careful about what is under metadata_url in config.json, could DoS

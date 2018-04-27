@@ -7,6 +7,7 @@ import socket
 import os
 import stat
 from urllib.parse import quote
+from copy import deepcopy
 from django.http import (
         HttpRequest,
         HttpResponse,
@@ -19,49 +20,11 @@ from django.utils.timezone import now
 from .util import generate_nonce, list_subset, is_sock, build_redirect_url
 from .config import Config
 
-
-SOCK_DGRAM_LEN = 1024
-
 '''
-provides context management. only provides wait(int)
+    returns Django queryset of model types, where value for fieldname contain all of the values provided
 '''
-class DomainSocketCondition(object):
-    def __init__(self, path):
-        print('initializing domain socket to: ' + path)
-        self.path = path
-    def acquire(self):
-        print('acquiring lock on domain socket: ' + self.path)
-        # check to see if the path is there
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        self.sock.bind(self.path)
-
-    def release(self):
-        print('releasing lock on domain socket: ' + self.path)
-        self.sock.close()
-        if stat.S_ISSOCK(os.stat(self.path).st_mode):
-            os.unlink(self.path)
-    
-    def wait(self, seconds):
-        print('waiting for domain socket condition on: ' + self.path)
-        seconds = int(seconds) # let it fail
-        self.sock.settimeout(seconds)
-        data,address = self.sock.recvfrom(SOCK_DGRAM_LEN)
-        if data:
-            data = data.decode('utf-8') # check value, or not care
-    
-    def notify(self, msg='SUCCESS'):
-        print('notifying observer on domain socket')
-        cli_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        try:
-            cli_sock.sendto(msg, self.path)
-        finally:
-            cli_sock.close()
-
-    def __enter__(self):
-        self.acquire()
-    def __exit__(self, *args):
-        self.release()
-
+def django_superset_filter(model, many_to_many_fieldname, values):
+    return
 
 '''
     This is the top level handler of authorization redirects and authorization url generation.
@@ -97,7 +60,8 @@ class RedirectHandler(object):
         provider_tag: matched against provider dictionary keys in the configuration loaded at startup
     '''
     def add(self, uid, scopes, provider_tag, return_to=None):
-        print('adding callback waiter with uid {}, scopes {}, provider {}, return_to {}'.format(uid, scopes, provider_tag, return_to))
+        print('adding callback waiter with uid {}, scopes {}, provider {}, return_to {}'.format(
+                uid, scopes, provider_tag, return_to))
         scopes = sorted(scopes)
         if uid == None:
             uid = ''
@@ -143,67 +107,6 @@ class RedirectHandler(object):
         return url, nonce
 
 
-    def block(self, uid, scopes, provider_tag):
-        scopes = sorted(scopes)
-
-        pending_callbacks = []
-        p_db = models.PendingCallback.objects.all()
-        for p in p_db:
-            if p.uid == uid and list_subset(scopes, p.scopes.all()) and p.provider == provider_tag:
-                pending_callbacks.append(p)
-        if len(pending_callbacks) == 0:
-            return None # no pending callback found, must re-authorize from scratch by calling add
-
-        import tempfile
-        tmpdir = tempfile.mkdtemp()
-        tmpfile = tmpdir + '/' + generate_nonce(32)
-        lock = DomainSocketCondition(tmpfile)
-
-        observer = models.BlockingRequest(
-                uid=uid,
-                provider=provider,
-                socket_file=tmpfile,
-                nonce=None
-        )
-        observer.save()
-        for scope in scopes:
-            s_db = models.Scope.objects.get_or_create(name=scope.name)
-            observer.scopes.add(s_db)
-
-        observer.save()
-        return lock
-
-    def block_nonce(self, nonce):
-        pending_callbacks = []
-        p_db = models.PendingCallback.objects.all()
-        for p in p_db:
-            if p.nonce == nonce:
-                pending_callbacks.append(p)
-        if len(pending_callbacks) == 0:
-            return None # no pending callback found, must re-authorize from scratch by calling add
-        if len(pending_callbacks) != 1:
-            raise RuntimeError('multiple pending callbacks with same nonce, cannot proceed')
-        p = pending_callbacks[0]
-
-        import tempfile
-        tmpdir = tempfile.mkdtemp()
-        tmpfile = tmpdir + '/' + generate_nonce(32)
-        lock = DomainSocketCondition(tmpfile)
-                
-        observer = models.BlockingRequest(
-                uid=p.uid,
-                provider=p.provider,
-                socket_file=tmpfile,
-                nonce=nonce
-        )
-        observer.save()
-        for scope in p.scopes.all():
-            observer.scopes.add(scope)
-
-        observer.save()
-        return lock
-
-
     '''
         Accept a request conforming to Authorization Code Flow OIDC Core 1.0 section 3.1.2.5
         (http://openid.net/specs/openid-connect-core-1_0.html#AuthResponse)
@@ -224,6 +127,7 @@ class RedirectHandler(object):
         if not w:
             return HttpResponseBadRequest('callback request from login is malformed, or authorization session expired')
         else:
+            print('accepted request maps to pending callback object: ' + str(vars(w)))
             provider = w.provider
             if self.is_openid(provider):
                 meta = models.OIDCMetadataCache.objects.get(provider=provider).value
@@ -250,50 +154,7 @@ class RedirectHandler(object):
             
             if not success:
                 return HttpResponseServerError(msg + ':' + token_response)
-
-            # notify anyone blocking for (uid,scopes,provider) token criteria
-            blocking_requests = []
-            b_db = models.BlockingRequest.objects.all()
-            for b in b_db:
-                blocking_scopes = [s.name for s in b.scopes.all()]
-                waiting_scopes = [s.name for s in w.scopes.all()]
-                # if the scopes that a client is blocking for is a subset of the scopes from this callback
-                if b.uid == user.id and list_subset(blocking_scopes, waiting_scopes) and b.provider == provider:
-                    blocking_requests.append(b) 
-            # should only be one which matches, but just in case...
-            for b in blocking_requests:
-                if is_sock(b.socket_file):
-                    cli_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-                    print('writing SUCCESS to domain socket: ' + b.socket_file)
-                    try:
-                        cli_sock.sendto('SUCCESS'.encode('utf-8'), b.socket_file)
-                    except ConnectionRefusedError:
-                        print('no one listening to socket')
-                        os.unlink(b.socket_file)
-                else:
-                    print('orphaned blocking entry found: ' + b.socket_file)
-                b.delete() # delete from db
-                
-
-            # notify anyone blocking for the nonce
-            blocking_requests = []
-            b_db = models.BlockingRequest.objects.all()
-            for b in b_db:
-                if b.nonce == nonce:
-                    blocking_requests.append(b)
-            # should only be one which matches, but just in case...
-            for b in blocking_requests:
-                if is_sock(b.socket_file):
-                    cli_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-                    print('writing SUCCESS to domain socket: ' + b.socket_file)
-                    try:
-                        cli_sock.sendto('SUCCESS'.encode('utf-8'), b.socket_file)
-                    except ConnectionRefusedError:
-                        print('no one listening to socket')
-                        os.unlink(b.socket_file)
-                else:
-                    print('orphaned blocking entry found: ' + b.socket_file)
-                b.delete() # delete from db
+            
 
             if w.return_to:
                 ret = HttpResponseRedirect(build_redirect_url(w.return_to, token))
@@ -514,7 +375,7 @@ class RedirectHandler(object):
             additional_params = 'scope=' + scope
             additional_params += '&response_type=code'
             additional_params += '&access_type=offline'
-            additional_params += '&login%20consent'
+            additional_params += '&prompt=login%20consent'
 
         elif self.is_oauth2(provider_tag):
             authorization_endpoint = provider_config['authorization_endpoint']
@@ -551,6 +412,8 @@ class GlobusRedirectHandler(RedirectHandler):
         user = token = nonce = None
         # check to see if top level token is for openid
         if 'openid' in body['scope'] and 'id_token' in body:
+            #w_copy = deepcopy(w)
+            #w_copy.scopes = [s for s in models.Scope.objects.all() if s.name in body['scope'].split()]
             success,msg,user,token,nonce = super()._handle_token_response(w, response)
             if not success:
                 return (success,msg,user,token,nonce)
@@ -573,10 +436,13 @@ class GlobusRedirectHandler(RedirectHandler):
             # For globus, on a token callback it also puts the state value into the root level
             # json object. This is actually pretty nice and should be part of the OAuth2.0 spec.
             # However substituting the state value for the nonce (in OAuth2 callbacks, not OIDC)
-            # will break our ability to let clients block based on the initial nonce parameter
+            # will break our ability to let clients query based on the initial nonce parameter
             # sent in the original authorization url. Use the nonce in the PendingCallback object
             # and link the tokens to it, even if the nonce was not returned to us in the token
-            # callback from globus
+            # callback from globus. 
+            # This also impacts other OAuth2.0 apis which do not return nonce.
+            # TODO It might be useful to switch over to linking tokens to the 'state' value 
+            # instead of 'nonce' since 'state' is used by both openid and oauth2.
             if not nonce:
                 nonce = w.nonce
 

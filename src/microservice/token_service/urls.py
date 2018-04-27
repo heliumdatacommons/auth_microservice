@@ -27,7 +27,7 @@ urlpatterns = [
 
     # private (protected by api key)
     path('token', views.token, name='token'),
-    #path('token_by_nonce', views.token_by_nonce, name='token_by_nonce'),
+    path('validate', views.validate_token, name='validate_token'),
 ]
 
 

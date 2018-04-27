@@ -120,33 +120,13 @@ def url(request):
 @require_http_methods(['GET'])
 def subject_by_nonce(request):
     nonce = request.GET.get('nonce')
-    block = request.GET.get('block')
-    if block:
-        if isint(block):
-            block = int(block)
-            if block < 0:
-                return HttpResponseBadRequest('if block param included, must be false or a positive integer')
-        elif block.lower() == 'false':
-            block = False 
-        else:
-            return HttpResponseBadRequest('if block param included, must be false or a positive integer')
+
     handler = redirect_handler.RedirectHandler()
     tokens = _get_tokens_by_nonce(nonce)
     if len(tokens) == 0:
-        lock = handler.block_nonce(nonce)
-        if not lock:  #TODO clean this logic up
-            print('no lock returned from handler.block')
-            return HttpResponseNotFound('no token which meets required criteria')
-        with lock:
-            print('waiting for {} seconds'.format(block))
-            lock.wait(block)
-            # see if it was actually satisfied, or just woken up for timeout
-            tokens = _get_tokens_by_nonce(nonce)
-            if len(tokens) == 0:
-                return HttpResponseNotFound('no token which meets required criteria')
-
+        return HttpResponseNotFound('no token which meets required criteria')
     token = tokens[0]
-    if token.expires <= now():
+    if now() >= token.expires:
         token = handler._refresh_token(token)
     return JsonResponse(status=200, data={'uid':token.user.id})
 
@@ -156,27 +136,14 @@ def token(request):
     if not _valid_api_key(request):
         return HttpResponseForbidden('must provide valid api key')
 
-    #print('GET params:')
-    #for k,v in request.GET.items():
-    #    print(k + ":" + v)
     uid = request.GET.get('uid')
     scope = request.GET.get('scope')
     provider = request.GET.get('provider')
-    block = request.GET.get('block')
     nonce = request.GET.get('nonce')
     return_to = request.GET.get('return_to')
 
+    handler = redirect_handler.RedirectHandler()
     # validate
-    if block:
-        if isint(block):
-            block = int(block)
-            if block < 0:
-                return HttpResponseBadRequest('if block param included, must be false or a positive integer')
-        elif block.lower() == 'false':
-            block = False
-        else:
-            return HttpResponseBadRequest('if block param included, must be false or a positive integer')
-
     # nonce takes precedence over (scope,provider,uid) combination
     if not nonce:
         if not scope:
@@ -198,56 +165,31 @@ def token(request):
 
     if nonce:
         tokens = _get_tokens_by_nonce(nonce)
+        if len(tokens) == 0:
+            return HttpResponseNotFound('no token which meets required criteria')
     else:
         tokens = _get_tokens(uid, scopes, provider)
-
-    handler = redirect_handler.RedirectHandler()
-    if len(tokens) == 0:
-        print('no tokens met criteria')
-        # no existing token matches these parameters
-        if block:
-            print('attempting block as required by client')
-            if nonce:
-                lock = handler.block_nonce(nonce)
-            else:
-                lock = handler.block(uid, scopes, provider)
-            
-            if not lock:  #TODO clean this logic up
-                print('no lock returned from handler.block')
-                return HttpResponseNotFound('no token which meets required criteria')
-            with lock:
-                print('waiting for {} seconds'.format(block))
-                lock.wait(block)
-                # see if it was actually satisfied, or just woken up for timeout
-                if nonce:
-                    tokens = _get_tokens_by_nonce(nonce)
-                else:
-                    tokens = _get_tokens(uid, scopes, provider)
-
-                if len(tokens) == 0:
-                    return HttpResponseNotFound('no token which meets required criteria')
-        else:
-            # new authorization for this user and scopes
+        # only allow automatic flow start if queried by (uid,provider,scope), not nonce.
+        if len(tokens) == 0:
             url,nonce = handler.add(uid, scopes, provider, return_to)
             return JsonResponse(status=401, data={'authorization_url': url, 'nonce': nonce})
 
-    if len(tokens) > 1:
-        token = tokens[0] # TODO
-        #token = prune_duplicate_tokens(tokens)
-    else:
-        token = tokens[0]
+    token = prune_duplicate_tokens(tokens)
     
     if token.expires <= now():
         token = handler._refresh_token(token)
 
     if return_to:
         return HttpResponseRedirect(util.build_redirect_url(w.return_to, token))
-
     else:
         return JsonResponse(status=200, data={'access_token': token.access_token,'uid':token.user.id})
 
+# TODO
 def prune_duplicate_tokens(tokens):
-    pass    
+    if tokens:
+        return tokens[0]
+    else:
+        return None
 
 
 def authcallback(request):
@@ -259,4 +201,9 @@ def authcallback(request):
     
     # handler.accept returns a Django response or throws an exception
     return red_resp
+
+def validate_token(request):
+    if not _valid_api_key(request):
+        return HttpResponseForbidden('must provide valid api key')
+    
 
