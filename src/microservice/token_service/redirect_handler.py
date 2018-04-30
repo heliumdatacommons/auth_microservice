@@ -20,11 +20,6 @@ from django.utils.timezone import now
 from .util import generate_nonce, list_subset, is_sock, build_redirect_url
 from .config import Config
 
-'''
-    returns Django queryset of model types, where value for fieldname contain all of the values provided
-'''
-def django_superset_filter(model, many_to_many_fieldname, values):
-    return
 
 '''
     This is the top level handler of authorization redirects and authorization url generation.
@@ -237,6 +232,29 @@ class RedirectHandler(object):
             token.scopes.add(s)
         
         return (True,'',user,token,nonce)
+
+
+    def validate_openid_token(self, provider, access_token, validation_url=None):
+        headers = {
+                'Authorization': 'Bearer ' + str(access_token)
+        }
+        if validation_url:
+            endpoint = validation_url
+        else:
+            if self.is_openid(provider):
+                meta = json.loads(models.OIDCMetadataCache.objects.get(provider=provider).value)
+                endpoint = meta['userinfo_endpoint']
+            else: # non oidc providers must specify a userinfo_endpoint on the config file
+                endpoint = Config['providers'][provider]['userinfo_endpoint']
+
+        response = requests.get(endpoint, headers=headers)
+        print(response.status_code)
+        print(response.content)
+        content = response.content.decode('utf-8')
+        if response.status_code != 200:
+            return HttpResponse(status=401, content='Invalid token: ' + content)
+        else:
+            return JsonResponse(status=200, data=json.loads(content))
 
 
     '''

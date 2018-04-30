@@ -205,5 +205,11 @@ def authcallback(request):
 def validate_token(request):
     if not _valid_api_key(request):
         return HttpResponseForbidden('must provide valid api key')
-    
+    provider = request.GET.get('provider')
+    access_token = request.GET.get('access_token')
+    validation_url = request.GET.get('validation_url') # None if not present
+
+    handler = redirect_handler.RedirectHandler()
+    response = handler.validate_openid_token(provider, access_token, validation_url)
+    return response
 
