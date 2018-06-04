@@ -3,7 +3,8 @@ from django.http import (
         HttpResponseBadRequest,
         JsonResponse,
         HttpResponseNotFound,
-        HttpResponseForbidden)
+        HttpResponseForbidden,
+        HttpResponseRedirect)
 from django.views.decorators.http import require_http_methods
 from django.utils.timezone import now
 
@@ -179,10 +180,10 @@ def token(request):
     if token.expires <= now():
         token = handler._refresh_token(token)
 
-    if return_to:
-        return HttpResponseRedirect(util.build_redirect_url(w.return_to, token))
-    else:
-        return JsonResponse(status=200, data={'access_token': token.access_token,'uid':token.user.id})
+    #if return_to:
+    #    return HttpResponseRedirect(util.build_redirect_url(return_to, token))
+    #else:
+    return JsonResponse(status=200, data={'access_token': token.access_token, 'uid':token.user.id})
 
 # TODO
 def prune_duplicate_tokens(tokens):

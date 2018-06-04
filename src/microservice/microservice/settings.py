@@ -155,6 +155,13 @@ with open('/etc/auth_microservice/config.json', 'r') as f:
             assert('token_endpoint' in p)
         if p['standard'] == 'OpenID Connect':
             assert('metadata_url' in p)
+    # set defaults if not configured
+    if 'url_expiration_timeout' not in d:
+        d['url_expiration_timeout'] = 60
+    if int(d['url_expiration_timeout']) <= 0:
+        raise RuntimeError('url_expiration_timeout must be a positive integer')
+    else:
+        d['url_expiration_timeout'] = int(d['url_expiration_timeout'])
     token_service.config.Config = d
 
 

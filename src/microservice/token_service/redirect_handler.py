@@ -123,6 +123,8 @@ class RedirectHandler(object):
             return HttpResponseBadRequest('callback request from login is malformed, or authorization session expired')
         else:
             print('accepted request maps to pending callback object: ' + str(vars(w)))
+            if now() > w.creation_time + datetime.timedelta(seconds=Config['url_expiration_timeout']):
+                return HttpResponseBadRequest('This authorization url has expired, please retry')
             provider = w.provider
             if self.is_openid(provider):
                 meta = models.OIDCMetadataCache.objects.get(provider=provider).value
@@ -248,8 +250,6 @@ class RedirectHandler(object):
                 endpoint = Config['providers'][provider]['userinfo_endpoint']
 
         response = requests.get(endpoint, headers=headers)
-        print(response.status_code)
-        print(response.content)
         content = response.content.decode('utf-8')
         if response.status_code != 200:
             return HttpResponse(status=401, content='Invalid token: ' + content)
