@@ -236,19 +236,28 @@ class RedirectHandler(object):
         return (True,'',user,token,nonce)
 
 
-    def validate_openid_token(self, provider, access_token, validation_url=None):
+    def validate_token(self, provider, access_token, scopes=None):
         headers = {
                 'Authorization': 'Bearer ' + str(access_token)
         }
-        if validation_url:
-            endpoint = validation_url
+        validate_type = None
+        #if validation_url:
+        #    # use custom url if provided
+        #    endpoint = validation_url
+        if Config['providers'][provider].get('introspection_endpoint'):
+            # attempt to use configured introspection endpoint
+            endpoint = Config['providers'][provider]['introspection_endpoint']
+            validate_type = 'introspection'
         else:
+            # fall back to userinfo endpoint
             if self.is_openid(provider):
                 meta = json.loads(models.OIDCMetadataCache.objects.get(provider=provider).value)
                 endpoint = meta['userinfo_endpoint']
             else: # non oidc providers must specify a userinfo_endpoint on the config file
                 endpoint = Config['providers'][provider]['userinfo_endpoint']
 
+        if validate_type == 'introspection':
+            endpoint = endpoint % access_token
         response = requests.get(endpoint, headers=headers)
         content = response.content.decode('utf-8')
         if response.status_code != 200:
@@ -522,3 +531,51 @@ class GlobusRedirectHandler(RedirectHandler):
             token.scopes.add(s)
         return (True, '', user, token, nonce)
 
+
+class Validator(object):
+   def validate(self, token, provider):
+        endpoint = Config['providers'][provider]['introspection_endpoint']
+        creds = base64.b64encode('{}:{}'.format(
+                    Config['providers'][provider]['client_id'],
+                    Config['providers'][provider]['client_secret']).encode('utf-8'))
+        headers = {
+                'Authorization': 'Basic ' + creds.decode('utf-8'),
+                'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        body = {'token': token}
+        #print('endpoint: ' + endpoint)
+        #print('headers: ' + json.dumps(headers))
+        #print('body: ' + json.dumps(body))
+        response = requests.post(endpoint, headers=headers, data=body)
+        content = response.content.decode('utf-8')
+        if response.status_code > 400:
+            print('validate failed on {}. returned [{}] {}'.format(endpoint, response.status_code, content))
+            False
+        else:
+            try:
+                body = json.loads(content)
+                print(body)
+            except JSONDecodeError:
+                print('could not decode response: {}'.format(content))
+                return False
+            if body.get('active') == True:
+                return True
+        return False 
+
+class GoogleValidator(Validator):
+    def validate(self, token, provider='google'):
+        endpoint = Config['providers']['google']['introspection_endpoint'] + '?access_token=' + token
+        response = requests.post(endpoint)
+        content = response.content.decode('utf-8')
+        if response.status_code > 400:
+            print('validate failed on {}. returned [{}] {}'.format(endpoint, response.status_code, content))
+            False
+        else:
+            try:
+                body = json.loads(content)
+            except JSONDecodeError:
+                print('could not decode response: {}'.format(content))
+                return False
+            if int(body['expires_in']) > 0:
+                return True
+        return False

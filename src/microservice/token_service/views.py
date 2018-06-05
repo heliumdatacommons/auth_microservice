@@ -209,8 +209,13 @@ def validate_token(request):
     provider = request.GET.get('provider')
     access_token = request.GET.get('access_token')
     validation_url = request.GET.get('validation_url') # None if not present
+    
+    if provider == 'google':
+        token_validator = redirect_handler.GoogleValidator()
+    else:
+        token_validator = redirect_handler.Validator()
+    
+    isvalid = token_validator.validate(access_token, provider)
 
-    handler = redirect_handler.RedirectHandler()
-    response = handler.validate_openid_token(provider, access_token, validation_url)
-    return response
+    return JsonResponse(status=200, data= {'active': isvalid})
 
