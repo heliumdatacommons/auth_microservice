@@ -215,7 +215,7 @@ def validate_token(request):
     else:
         token_validator = redirect_handler.Validator()
     
-    isvalid = token_validator.validate(access_token, provider)
-
-    return JsonResponse(status=200, data= {'active': isvalid})
+    validate_response = token_validator.validate(access_token, provider)
+    print('validate_response: ' + str(validate_response))
+    return JsonResponse(status=200, data=validate_response)
 

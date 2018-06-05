@@ -550,17 +550,20 @@ class Validator(object):
         content = response.content.decode('utf-8')
         if response.status_code > 400:
             print('validate failed on {}. returned [{}] {}'.format(endpoint, response.status_code, content))
-            False
+            return {'active': False}
         else:
             try:
                 body = json.loads(content)
                 print(body)
             except JSONDecodeError:
                 print('could not decode response: {}'.format(content))
-                return False
-            if body.get('active') == True:
-                return True
-        return False 
+                return {'active': False}
+            if body.get('active', None) == True:
+                r = {'active': True}
+                if body.get('sub', None):
+                    r['sub'] =  body['sub']
+                return r
+        return {'active': False} 
 
 class GoogleValidator(Validator):
     def validate(self, token, provider='google'):
@@ -569,13 +572,16 @@ class GoogleValidator(Validator):
         content = response.content.decode('utf-8')
         if response.status_code > 400:
             print('validate failed on {}. returned [{}] {}'.format(endpoint, response.status_code, content))
-            False
+            return {'active': False}
         else:
             try:
                 body = json.loads(content)
             except JSONDecodeError:
                 print('could not decode response: {}'.format(content))
-                return False
+                return {'active': False}
             if int(body['expires_in']) > 0:
-                return True
-        return False
+                r = {'active': True}
+                if body.get('user_id', None):
+                    r['sub'] = body['user_id']
+                return r
+        return {'active': False}
