@@ -237,6 +237,7 @@ class RedirectHandler(object):
 
 
     def validate_token(self, provider, access_token, scopes=None):
+        print('validate_token, provider: [{}], access_token: [{}]'.format(provider, access_token))
         headers = {
                 'Authorization': 'Bearer ' + str(access_token)
         }
@@ -531,6 +532,12 @@ class GlobusRedirectHandler(RedirectHandler):
             token.scopes.add(s)
         return (True, '', user, token, nonce)
 
+
+def get_validator(provider=None):
+    if provider == 'google':
+        return GoogleValidator()
+    else:
+        return Validator()
 
 class Validator(object):
    def validate(self, token, provider):

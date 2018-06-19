@@ -162,6 +162,13 @@ with open('/etc/auth_microservice/config.json', 'r') as f:
         raise RuntimeError('url_expiration_timeout must be a positive integer')
     else:
         d['url_expiration_timeout'] = int(d['url_expiration_timeout'])
+
+    if 'real_time_validate_cache_retention_timeout' not in d:
+        d['real_time_validate_cache_retention_timeout'] = 30
+    if int(d['real_time_validate_cache_retention_timeout']) < 0:
+        raise RuntimeERror('real_time_validate_cache_retention_timeout must be a positive integer')
+    else:
+        d['real_time_validate_cache_retention_timeout'] = int(d['real_time_validate_cache_retention_timeout'])
     token_service.config.Config = d
 
 

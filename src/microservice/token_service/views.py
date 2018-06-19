@@ -1,4 +1,5 @@
 import re
+import time
 from django.http import (
         HttpResponseBadRequest,
         JsonResponse,
@@ -12,6 +13,7 @@ from . import models
 from . import redirect_handler
 from . import config
 from . import util
+Config = config.Config
 
 @require_http_methods(['GET'])
 def create_key(request):
@@ -44,7 +46,14 @@ def isint(s):
         return False
 
 
-def _get_tokens(uid, scopes, provider):
+'''
+This queries for tokens belonging to a given uid/subjectid, with a superset of the scopes, in a given provider.
+
+If validate is True, will additionally perform a validate_token operation on each token before returning it.
+Note that enabling validate will provide real-time token revocation checks with the provider, but this could
+have a serious performance impact.
+'''
+def _get_tokens(uid, scopes, provider, validate=False):
     print('querying for tokens(uid,scopes,provider): ({},{},{})'.format(uid,scopes,provider))
     # Django can do a filter using a subset operation for linked many-to-many, but not a filter using superset
     # we need to find tokens whose scopes are a superset of the scopes list being requested
@@ -53,16 +62,70 @@ def _get_tokens(uid, scopes, provider):
         #scopes__in=models.Scope.objects.filter(name__in=scopes),
         provider=provider
     )
+    validator = redirect_handler.get_validator(provider)    
     tokens = []
     for t in queryset:
         token_scope_names = [s.name for s in t.scopes.all()]
         if util.list_subset(scopes, token_scope_names):
             tokens.append(t)
+
+    if validate:
+        tokens = prune_invalid(tokens)
     return tokens
 
-def _get_tokens_by_nonce(nonce):
+'''
+tokens:
+    iterable of token_service.models.Token
+provider:
+    str of provider key mapping to config values
+'''
+access_token_validation_cache = {}
+def prune_invalid(tokens):
+    valid = []
+    validators = {}
+    cache_timeout = Config['real_time_validate_cache_retention_timeout']
+    handler = redirect_handler.RedirectHandler()
+    for t in tokens:
+        if access_token_validation_cache.get((t.access_token, t.provider), None):
+            cache_entry = access_token_validation_cache.get((t.access_token, t.provider))
+            if time.time() <= cache_entry['ctime'] + cache_timeout:
+                if cache_entry['val']:
+                    valid.append(t)
+                # within validation cache window for this token
+                print('token validation cached for ({},{})'.format(t.access_token, t.provider))
+                continue
+        if len(t.access_token) and len(t.provider):
+            if t.provider in validators:
+                validator = validators[t.provider]
+            else:
+                validator = redirect_handler.get_validator(t.provider)
+                validators[t.provider] = validator
+            validation_resp = validator.validate(t.access_token, t.provider)
+            active = validation_resp.get('active', False)
+            # insert to worker cache
+            access_token_validation_cache[(t.access_token, t.provider)] = \
+                    {'ctime':time.time(), 'val': active}
+            if active:
+                print('token [{}] belonging to uid [{}] was valid'.format(t.access_token, t.user.id))
+                valid.append(t)
+            else:
+                # try refresh
+                try:
+                    t = handler._refresh_token(t)
+                    valid.append(t)
+                except RuntimeError as e:
+                    print('token [{}] belonging to uid [{}] was revoked'.format(t.access_token, t.user.id))
+                    t.delete()
+        else:
+            print('token found with no access_token or provider field: ' + str(t))
+    return valid
+
+def _get_tokens_by_nonce(nonce, validate=False):
     print('querying for tokens(nonce): ({})'.format(nonce))
-    return models.Token.objects.filter(nonce__value=nonce) # this nonce is not encrypted
+    tokens = models.Token.objects.filter(nonce__value=nonce) # this nonce is not encrypted
+    if validate:
+        tokens = prune_invalid(tokens)
+    return tokens
 
 def _valid_api_key(request):
     authorization = request.META.get('HTTP_AUTHORIZATION')
@@ -121,9 +184,10 @@ def url(request):
 @require_http_methods(['GET'])
 def subject_by_nonce(request):
     nonce = request.GET.get('nonce')
+    validate = request.GET.get('validate', str(Config['real_time_validate_default'])).lower() == 'true'
 
     handler = redirect_handler.RedirectHandler()
-    tokens = _get_tokens_by_nonce(nonce)
+    tokens = _get_tokens_by_nonce(nonce, validate=validate)
     if len(tokens) == 0:
         return HttpResponseNotFound('no token which meets required criteria')
     token = tokens[0]
@@ -142,7 +206,7 @@ def token(request):
     provider = request.GET.get('provider')
     nonce = request.GET.get('nonce')
     return_to = request.GET.get('return_to')
-
+    validate = request.GET.get('validate', str(Config['real_time_validate_default'])).lower() == 'true'
     handler = redirect_handler.RedirectHandler()
     # validate
     # nonce takes precedence over (scope,provider,uid) combination
@@ -169,7 +233,7 @@ def token(request):
         if len(tokens) == 0:
             return HttpResponseNotFound('no token which meets required criteria')
     else:
-        tokens = _get_tokens(uid, scopes, provider)
+        tokens = _get_tokens(uid, scopes, provider, validate=validate)
         # only allow automatic flow start if queried by (uid,provider,scope), not nonce.
         if len(tokens) == 0:
             url,nonce = handler.add(uid, scopes, provider, return_to)
@@ -209,12 +273,9 @@ def validate_token(request):
     provider = request.GET.get('provider')
     access_token = request.GET.get('access_token')
     validation_url = request.GET.get('validation_url') # None if not present
-    
-    if provider == 'google':
-        token_validator = redirect_handler.GoogleValidator()
-    else:
-        token_validator = redirect_handler.Validator()
-    
+
+    token_validator = redirect_handler.get_validator(provider)    
+
     validate_response = token_validator.validate(access_token, provider)
     print('validate_response: ' + str(validate_response))
     return JsonResponse(status=200, data=validate_response)
