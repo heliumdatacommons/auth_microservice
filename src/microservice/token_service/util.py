@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 '''
 Returns a random hex string with provided length. URL safe.
-String returned contains (1/2 * length) bits of urandom entropy.
+String returned contains (1/2 * length) bytes of urandom entropy.
 '''
 def generate_nonce(length):
     nonce = os.urandom(math.ceil(length))
@@ -18,7 +18,7 @@ def generate_nonce(length):
 
 '''
 Returns a random base64 string with provided length. Not URL safe.
-String returned contains (3/4 * length) bits of urandom entropy.
+String returned contains (3/4 * length) bytes of urandom entropy.
 '''
 def generate_base64(length):
     nonce = os.urandom(math.ceil(int(float(length)*3/4)))
