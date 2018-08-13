@@ -436,27 +436,39 @@ def action_user_key(request, uid, key_id, **kwargs):
         return JsonResponse(status=200, data={'message': 'Successfully deleted'})
 
 @require_http_methods(['GET'])
-#@require_valid_api_key_or_user_token
-@require_valid_api_key
+@require_valid_api_key # for this user key endpoint, only allow applications, not users
 def verify_user_key(request, **kwargs):
-#    if kwargs.get('token', None):
-#        user = kwargs['token'].user
-#        print('got user from bearer token')
-#        if str(user.id) != str(uid):
-#            return HttpResponseForbidden('Not authorized to create keys for this uid')
-#    else:
-#        try:
-#            user = models.User.get(id=uid)
-#            print('got user from uid')
-#        except ObjectDoesNotExist as e:
-#            return HttpResponseBadRequest('User does not exist')
-
     key_param = request.GET.get('key')
     if not key_param:
         return HttpResponseBadRequest('Missing required key param')
+    uid_param = request.GET.get('uid')
+    user_param = request.GET.get('username')
+    if not uid_param and not user_param:
+        return HttpResponseBadRequest('Missing required param, one of [uid, username]')
+    # look up user
+    # ret same err for all lookup failures
+    invalid_user = HttpResponseBadRequest('User not found which matches criteria') 
+    user1 = user2 = None
+    try:
+        if uid_param:
+            user1 = models.User.objects.get(id=uid_param)
+        if user_param:
+            user2 = models.User.objects.get(user_name=user_param)
+        if user1 and user2:
+            if user1.id != user2.id: # disallow mismatched uid and user_name
+                return invalid_user
+        elif not user1 and not user2:
+            return invalid_user
+        user = user1 if user1 else user2
+    except ObjectDoesNotExist as e:
+        print(repr(e))
+        return invalid_user
+
+    # now that we have the user, lookup key
     try:
         key_hash = util.sha256(key_param)
-        key = models.User_key.objects.get(key_hash=key_hash)
+        key = models.User_key.objects.get(user=user, key_hash=key_hash)
         return JsonResponse(status=200, data={'valid': True})
     except ObjectDoesNotExist as e:
         return JsonResponse(status=401, data={'valid': False})
+
