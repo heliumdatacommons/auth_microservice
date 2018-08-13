@@ -17,7 +17,7 @@ from django.http import (
         HttpResponseServerError)
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils.timezone import now
-from .util import generate_nonce, list_subset, is_sock, build_redirect_url
+from .util import generate_nonce, list_subset, is_sock, build_redirect_url, sha256
 from .config import Config
 
 
@@ -213,7 +213,7 @@ class RedirectHandler(object):
         else:
             print('user recognized with id: {}'.format(sub))
             user = users[0]
-
+        act_hash = sha256(access_token)
         token = models.Token(
                 user=user,
                 access_token=access_token,
@@ -222,6 +222,7 @@ class RedirectHandler(object):
                 provider=w.provider,
                 issuer=issuer,
                 enabled=True,
+                access_token_hash=act_hash
         )
         token.save()
 

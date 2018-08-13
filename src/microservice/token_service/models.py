@@ -2,6 +2,9 @@ from django.db import models
 from . import crypt
 import binascii
 
+'''
+Arbitrary length encrypted text field using token_service.crypt module
+'''
 class EncryptedTextField(models.TextField):
     def __init__(self, *args, **kwargs):
         if crypt.instance == None:
@@ -28,6 +31,9 @@ class User(models.Model):
     user_name = models.CharField(max_length=256)
     name = EncryptedTextField()
 
+'''
+OpenID Connect/OAuth 2.0 token information
+'''
 class Token(models.Model):
     user = models.ForeignKey('User', on_delete=models.CASCADE)
     access_token = EncryptedTextField() # unknown size
@@ -38,17 +44,34 @@ class Token(models.Model):
     enabled = models.BooleanField(default=True)
     scopes = models.ManyToManyField('Scope')
     nonce = models.ManyToManyField('Nonce')
+    access_token_hash = models.TextField()
 
 class Scope(models.Model):
     name = models.CharField(max_length=256) # arbitrary but unlikely to be exceeded
 
+'''
+Keys generated for client applications
+'''
 class API_key(models.Model):
     key_hash = models.CharField(max_length=256) # the sha256 of the api key
     owner = EncryptedTextField() # short string describing what this api key is used for/by
     enabled = models.BooleanField(default=True)
 
+'''
+Keys generated for users
+'''
+class User_key(models.Model):
+    id = models.CharField(primary_key=True, max_length=256)
+    key_hash = models.CharField(max_length=256)
+    label = models.CharField(max_length=256, null=True, blank=True)
+    creation_time = models.DateTimeField(auto_now_add=True)
+    user = models.ForeignKey('User', on_delete=models.CASCADE)
+
+'''
+Nonces used for req/resp exchanges and auth flows
+'''
 class Nonce(models.Model):
-    value = models.TextField() # no need to encrypt this, this is only being used to record past values
+    value = models.TextField() # TODO encrypt this
     creation_time = models.DateTimeField(auto_now_add=True)
 
 '''
@@ -73,7 +96,11 @@ class PendingCallback(models.Model):
 #    socket_file = models.CharField(max_length=256) # path to socket file
 #    creation_time = models.DateTimeField(auto_now_add=True)
 
+'''
+Used for caching OpenID Connect provider metadata. It does not change often and is refreshed after an expiration period
+'''
 class OIDCMetadataCache(models.Model):
     value = models.TextField() # arbitrary length. careful about what is under metadata_url in config.json, could DoS
     retrieval_time = models.DateTimeField(auto_now_add=True)
     provider = models.CharField(max_length=256)
+

@@ -8,7 +8,8 @@ import json
 from urllib.parse import quote
 
 '''
-    Returns a random hex string with provided length. URL safe.
+Returns a random hex string with provided length. URL safe.
+String returned contains (1/2 * length) bits of urandom entropy.
 '''
 def generate_nonce(length):
     nonce = os.urandom(math.ceil(length))
@@ -16,7 +17,21 @@ def generate_nonce(length):
     return binascii.b2a_hex(nonce)[:length].decode('utf-8')
 
 '''
-takes two iterables, returns True if A is a subset of B
+Returns a random base64 string with provided length. Not URL safe.
+String returned contains (3/4 * length) bits of urandom entropy.
+'''
+def generate_base64(length):
+    nonce = os.urandom(math.ceil(int(float(length)*3/4)))
+    return base64.b64encode(nonce).decode('utf-8')
+
+def sanitize_base64(s):
+    s = s.replace('+', '-')
+    s = s.replace('/', '_')
+    s = s.replace('=', '~')
+    return s
+
+'''
+Takes two iterables, returns True if A is a subset of B
 '''
 def list_subset(A, B):
     if not A or not B:

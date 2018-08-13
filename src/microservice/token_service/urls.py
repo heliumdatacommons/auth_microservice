@@ -25,9 +25,15 @@ urlpatterns = [
     path('authorize', views.url, name='url'),
     path('authcallback', views.authcallback, name='authcallback'),
 
-    # private (protected by api key)
+    # private token operations (protected by api key)
     path('token', views.token, name='token'),
     path('validate_token', views.validate_token, name='validate_token'),
+
+    # api keys
+    path('apikey/<str:uid>/', views.list_user_keys),
+    path('apikey/<str:uid>/new', views.new_user_key),
+    path('apikey/<str:uid>/<str:key_id>', views.action_user_key),
+    path('apikey/verify', views.verify_user_key)
 ]
 
 
