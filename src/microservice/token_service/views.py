@@ -354,7 +354,7 @@ def list_user_keys(request, uid, **kwargs):
             return HttpResponseForbidden('Not authorized to create keys for this uid')
     else:
         try:
-            user = models.User.get(id=uid)
+            user = models.User.objects.get(id=uid)
             print('got user from uid')
         except ObjectDoesNotExist as e:
             return HttpResponseBadRequest('User does not exist')
@@ -383,7 +383,7 @@ def new_user_key(request, uid, **kwargs):
             return HttpResponseForbidden('Not authorized to create keys for this uid')
     else:
         try:
-            user = models.User.get(id=uid)
+            user = models.User.objects.get(id=uid)
             print('got user from uid')
         except ObjectDoesNotExist as e:
             return HttpResponseBadRequest('User does not exist')
@@ -414,7 +414,7 @@ def action_user_key(request, uid, key_id, **kwargs):
             return HttpResponseForbidden('Not authorized to create keys for this uid')
     else:
         try:
-            user = models.User.get(id=uid)
+            user = models.User.objects.get(id=uid)
             print('got user from uid')
         except ObjectDoesNotExist as e:
             return HttpResponseBadRequest('User does not exist')
@@ -443,11 +443,11 @@ def verify_user_key(request, **kwargs):
         return HttpResponseBadRequest('Missing required key param')
     uid_param = request.GET.get('uid')
     user_param = request.GET.get('username')
-    if not uid_param and not user_param:
-        return HttpResponseBadRequest('Missing required param, one of [uid, username]')
+#    if not uid_param and not user_param:
+#        return HttpResponseBadRequest('Missing required param, one of [uid, username]')
     # look up user
-    # ret same err for all lookup failures
-    invalid_user = HttpResponseBadRequest('User not found which matches criteria') 
+    # ret same err for all user lookup failures
+    invalid_user = JsonResponse(status=400, data={'message': 'User not found which matches criteria'}) 
     user1 = user2 = None
     try:
         if uid_param:
@@ -457,18 +457,20 @@ def verify_user_key(request, **kwargs):
         if user1 and user2:
             if user1.id != user2.id: # disallow mismatched uid and user_name
                 return invalid_user
-        elif not user1 and not user2:
-            return invalid_user
         user = user1 if user1 else user2
     except ObjectDoesNotExist as e:
         print(repr(e))
         return invalid_user
 
-    # now that we have the user, lookup key
+    # now lookup key
     try:
         key_hash = util.sha256(key_param)
-        key = models.User_key.objects.get(user=user, key_hash=key_hash)
-        return JsonResponse(status=200, data={'valid': True})
+        if user: # user was specified so check it
+            key = models.User_key.objects.get(user=user, key_hash=key_hash)
+            return JsonResponse(status=200, data={'valid': True})
+        else: # don't check user
+            key = models.User_key.objects.get(key_hash=key_hash)
+            return JsonResponse(status=200, data={'valid': True, 'uid': key.user.id, 'user_name': key.user.user_name})
     except ObjectDoesNotExist as e:
         return JsonResponse(status=401, data={'valid': False})
 
