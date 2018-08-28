@@ -66,7 +66,7 @@ def _get_tokens(uid, scopes, provider, validate=False):
         user__id=uid,
         #scopes__in=models.Scope.objects.filter(name__in=scopes),
         provider=provider
-    )
+    ).order_by('expires') # sort by expiration ascending (~oldest first~)
     validator = redirect_handler.get_validator(provider)    
     tokens = []
     for t in queryset:
@@ -77,6 +77,21 @@ def _get_tokens(uid, scopes, provider, validate=False):
     if validate:
         tokens = prune_invalid(tokens)
     return tokens
+
+'''
+Returns the first token in the iterable which is still valid.
+More performant than _get_tokens with validate=True because it only
+prunes as needed.
+tokens:
+    iterable of token_service.models.Token
+'''
+def _get_first_valid_token(uid, scopes, provider):
+    tokens = _get_tokens(uid, scopes, provider, validate=False)
+    for t in tokens:
+        ret = prune_invalid([t])
+        if len(ret) > 0:
+            return t
+    return None
 
 '''
 tokens:
@@ -125,9 +140,17 @@ def prune_invalid(tokens):
             print('token found with no access_token or provider field: ' + str(t))
     return valid
 
+def _get_first_valid_token_by_nonce(nonce):
+    tokens = _get_tokens_by_nonce(nonce, validate=False)
+    for t in tokens:
+        ret = prune_invalid([t])
+        if len(ret) > 0:
+            return t
+    return None
+
 def _get_tokens_by_nonce(nonce, validate=False):
     print('querying for tokens(nonce): ({})'.format(nonce))
-    tokens = models.Token.objects.filter(nonce__value=nonce) # this nonce is not encrypted
+    tokens = models.Token.objects.filter(nonce__value=nonce).order_by('expires') # this nonce is not encrypted
     if validate:
         tokens = prune_invalid(tokens)
     return tokens
@@ -277,17 +300,17 @@ def token(request):
             return JsonResponse(status=401, data={'authorization_url': url, 'nonce': nonce})
 
     if nonce:
-        tokens = _get_tokens_by_nonce(nonce)
-        if len(tokens) == 0:
+        token = _get_first_valid_token_by_nonce(nonce)
+        if not token:
             return HttpResponseNotFound('no token which meets required criteria')
     else:
-        tokens = _get_tokens(uid, scopes, provider, validate=validate)
+        token = _get_first_valid_token(uid, scopes, provider)
         # only allow automatic flow start if queried by (uid,provider,scope), not nonce.
-        if len(tokens) == 0:
+        if not token:
             url,nonce = handler.add(uid, scopes, provider, return_to)
             return JsonResponse(status=401, data={'authorization_url': url, 'nonce': nonce})
 
-    token = prune_duplicate_tokens(tokens)
+#    token = prune_duplicate_tokens(tokens)
     
     if token.expires <= now():
         token = handler._refresh_token(token)
