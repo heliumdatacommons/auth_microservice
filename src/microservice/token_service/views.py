@@ -318,7 +318,7 @@ def token(request):
     #if return_to:
     #    return HttpResponseRedirect(util.build_redirect_url(return_to, token))
     #else:
-    return JsonResponse(status=200, data={'access_token': token.access_token, 'uid':token.user.id})
+    return JsonResponse(status=200, data={'access_token': token.access_token, 'uid':token.user.id, 'user_name':token.user.user_name})
 
 # TODO
 def prune_duplicate_tokens(tokens):

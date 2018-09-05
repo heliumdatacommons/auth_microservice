@@ -20,7 +20,6 @@ from django.utils.timezone import now
 from .util import generate_nonce, list_subset, is_sock, build_redirect_url, sha256
 from .config import Config
 
-
 '''
     This is the top level handler of authorization redirects and authorization url generation.
 
@@ -563,13 +562,22 @@ class Validator(object):
             try:
                 body = json.loads(content)
                 print(body)
-            except JSONDecodeError:
+            except json.JSONDecodeError:
                 print('could not decode response: {}'.format(content))
                 return {'active': False}
             if body.get('active', None) == True:
                 r = {'active': True}
                 if body.get('sub', None):
                     r['sub'] =  body['sub']
+                if body.get('username', None):
+                    r['username'] = body['username']
+                elif 'sub' in r:
+                    # see if we recognize the subject id
+                    try:
+                        user = models.User.objects.get(id=r['sub'])
+                        r['username'] = user.user_name
+                    except ObjectDoesNotExist:
+                        pass
                 return r
         return {'active': False} 
 
@@ -584,7 +592,7 @@ class GoogleValidator(Validator):
         else:
             try:
                 body = json.loads(content)
-            except JSONDecodeError:
+            except json.JSONDecodeError:
                 print('could not decode response: {}'.format(content))
                 return {'active': False}
             if int(body['expires_in']) > 0:
