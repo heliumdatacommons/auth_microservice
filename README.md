@@ -52,7 +52,7 @@ $ sudo su - auth_microservice
 [auth_microservice] $
 ```
 
-uWSGI is the recommended way to run the server. `uwsgi.ini` is provided with a basic default configuration, which can be changed to meet other environment conditions. 
+uWSGI is the recommended way to run the server. `uwsgi.ini` is provided with a basic default configuration, which can be changed to meet other environment conditions.
 
 ```
 $ uwsgi --ini ./uwsgi.ini
