@@ -52,20 +52,20 @@ $ sudo su - auth_microservice
 [auth_microservice] $
 ```
 
-Gunicorn can be used to run the server, though other python wsgi servers may work.  In-memory state information is critical to the functioning of this code and there is no shared memory set up at this point, so the wsgi server used to run the django app must be configured to spawn workers as threads, **not** processes.  For gunicorn, this means we can use the `--threads` option but not the `--workers` option.  We can cap the number of concurrent threads at some reasonable value.  If threads are not increased from the default of 1, blocking requests to this service will prevent other requests from being responded to, even if the other requests are non-blocking.
+uWSGI is the recommended way to run the server. `uwsgi.ini` is provided with a basic default configuration, which can be changed to meet other environment conditions. 
 
 ```
-$ gunicorn --threads 100 microservice.wsgi
+$ uwsgi --ini ./uwsgi.ini
 ```
 
-To expose this on an external interface, we can use any http server to wrap localhost 8000 (gunicorn default port).  For nginx, add the following to /etc/nginx/nginx.conf in the http block.  If a conflicting path is already in use on 443, the django app can be placed on a sub-path in nginx, like /auth:
+To expose this on an external interface, we can use any http server to wrap localhost 8000 (default port).  For nginx, add the following to /etc/nginx/nginx.conf in the http block.  If a conflicting path is already in use on 443, the django app can be placed on a sub-path in nginx, like /auth:
 ```
  server {
         listen       443 ssl;
         listen       [::]:443 ssl;
         server_name  test.commonsshare.org;
-        ssl_certificate /home/kferriter/test.crt;
-        ssl_certificate_key /home/kferriter/test.key;
+        ssl_certificate /opt/certs/auth_microservice.crt;
+        ssl_certificate_key /opt/certs/auth_microservice.key;
         root         /usr/share/nginx/html;
         # Load configuration files for the default server block.
         include /etc/nginx/default.d/*.conf;
@@ -76,3 +76,4 @@ To expose this on an external interface, we can use any http server to wrap loca
         }
     }
 ```
+
