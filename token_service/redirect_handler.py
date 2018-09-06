@@ -6,7 +6,10 @@ import jwt
 import socket
 import os
 import stat
-from urllib.parse import quote
+try:
+    from urllib.parse import quote
+except ImportError:
+    from urllib import quote
 from copy import deepcopy
 from django.http import (
         HttpRequest,

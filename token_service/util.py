@@ -5,7 +5,10 @@ import binascii
 import hashlib
 import base64
 import json
-from urllib.parse import quote
+try:
+    from urllib.parse import quote
+except ImportError:
+    from urllib import quote
 
 '''
 Returns a random hex string with provided length. URL safe.

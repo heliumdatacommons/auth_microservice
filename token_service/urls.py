@@ -14,26 +14,29 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path
+try:
+    from django.urls import url
+except ImportError:
+    from django.conf.urls import url
 
 from . import views
 
 urlpatterns = [
-    path('admin/key', views.create_key, name='create_key'),
+    url('^admin/key/?$', views.create_key, name='create_key'),
     # public
-    path('subject_by_nonce', views.subject_by_nonce, name='subject_by_nonce'),
-    path('authorize', views.url, name='url'),
-    path('authcallback', views.authcallback, name='authcallback'),
+    url('^subject_by_nonce/?$', views.subject_by_nonce, name='subject_by_nonce'),
+    url('^authorize/?$', views.url, name='url'),
+    url('^authcallback/?$', views.authcallback, name='authcallback'),
 
     # private token operations (protected by api key)
-    path('token', views.token, name='token'),
-    path('validate_token', views.validate_token, name='validate_token'),
+    url('^token/?$', views.token, name='token'),
+    url('^validate_token/?$', views.validate_token, name='validate_token'),
 
     # api keys
-    path('apikey/<str:uid>/', views.list_user_keys),
-    path('apikey/<str:uid>/new', views.new_user_key),
-    path('apikey/<str:uid>/<str:key_id>', views.action_user_key),
-    path('apikey/verify', views.verify_user_key)
+    url('^apikey/(?P<uid>[^/]+)/?$', views.list_user_keys),
+    url('^apikey/(?P<uid>[^/]+)/new/?$', views.new_user_key),
+    url('^apikey/(?P<uid>[^/]+)/(?P<key_id>[^/]+)/?$', views.action_user_key),
+    url('^apikey/verify/?$', views.verify_user_key)
 ]
 
 

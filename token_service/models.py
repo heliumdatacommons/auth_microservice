@@ -1,6 +1,6 @@
-from django.db import models
-from . import crypt
 import binascii
+from . import crypt
+from django.db import models
 
 '''
 Arbitrary length encrypted text field using token_service.crypt module
@@ -10,7 +10,7 @@ class EncryptedTextField(models.TextField):
         if crypt.instance == None:
             raise RuntimeError('crypt module not initialized')
         self.crypt = crypt.instance
-        super().__init__(*args, **kwargs)
+        super(EncryptedTextField, self).__init__(*args, **kwargs)
 
     # invoked to convert db value to python value
     def from_db_value(self, value, expression, connection):
