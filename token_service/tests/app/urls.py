@@ -1,5 +1,9 @@
-from . import views
+from token_service import views
+try:
+    from django.urls import url
+except ImportError:
+    from django.conf.urls import url
 
 urlpatterns = [
-    path('admin/key', views.create_key, name='create_key'),
+    url('^admin/key$', views.create_key, name='create_key'),
 ]
