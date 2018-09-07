@@ -1,13 +1,19 @@
+"""
+To be run using python manage.py runscripts wipe
+
+cd .../lib/python2.7/site-packages/django/conf/project_template
+export DJANGO_SETTINGS_MODULE=token_service.settings
+python manage.py runscripts wipe
+"""
+
 from token_service import models
 
-for p in models.PendingCallback.objects.all():
-    p.delete()
-
-for b in models.BlockingRequest.objects.all():
-    b.delete()
-
-for t in models.Token.objects.all():
-    t.delete()
-
-for u in models.User.objects.all():
-    u.delete()
+def run():
+    for model in [
+            models.PendingCallback,
+            models.BlockingRequest,
+            models.Token,
+            models.User,
+    ]:
+        for entry in model.objects.all():
+            entry.delete()
