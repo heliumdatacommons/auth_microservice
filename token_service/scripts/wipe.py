@@ -8,6 +8,7 @@ python manage.py runscripts wipe
 
 from token_service import models
 
+
 def run():
     for model in [
             models.PendingCallback,
