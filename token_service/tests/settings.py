@@ -60,9 +60,6 @@ INSTALLED_APPS = [
 
 ROOT_URLCONF = 'token_service.tests.app.urls'
 
-TEMPLATE_DIRS = [
-]
-
 USE_TZ = True
 
 LOGGING = {
