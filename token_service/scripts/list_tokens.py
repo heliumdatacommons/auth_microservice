@@ -6,8 +6,8 @@ export DJANGO_SETTINGS_MODULE=token_service.settings
 python manage.py runscripts list_tokens
 """
 
-import sys
 from token_service import models
+
 
 def run():
     uid = ''
