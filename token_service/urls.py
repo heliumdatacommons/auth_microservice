@@ -1,4 +1,5 @@
-"""microservice URL Configuration
+"""
+token_service URL Configuration
 
 The `urlpatterns` list routes URLs to views. For more information please see:
     https://docs.djangoproject.com/en/2.0/topics/http/urls/
@@ -13,7 +14,6 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
-from django.contrib import admin
 try:
     from django.urls import url
 except ImportError:
@@ -38,5 +38,3 @@ urlpatterns = [
     url('^apikey/(?P<uid>[^/]+)/(?P<key_id>[^/]+)/?$', views.action_user_key),
     url('^apikey/verify/?$', views.verify_user_key)
 ]
-
-
