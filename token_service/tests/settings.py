@@ -1,16 +1,15 @@
 import binascii
 import json
 from token_service import crypt
+# pointless to do a whole from ... import * here
+from token_service.base_settings import make_database_mem
 
 DEBUG = True
 
 SECRET_KEY = 'this-should-be-top-secret'
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': ':memory:',
-    }
+    'default': make_database_mem()
 }
 
 SITE_ID = 1
@@ -71,7 +70,7 @@ LOGGING = {
         },
     },
     'loggers': {
-        'oidc_provider': {
+        'toke_service': {
             'handlers': ['console'],
             'level': 'DEBUG',
         },

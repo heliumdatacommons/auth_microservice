@@ -10,43 +10,59 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/2.0/ref/settings/
 """
 
-import os
-import traceback
-import json
-import binascii
-import random
-from token_service import crypt
-# Build paths inside the project like this: os.path.join(BASE_DIR, ...)
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/2.0/howto/deployment/checklist/
-
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY_LEN = 50
-ascii_printable = [chr(c) for c in range(ord('!'),ord('~')+1)]
-print('loading django key')
-if 'SECRET_KEY' not in locals():
-    loaded_django_key = False
-    if os.path.isfile(os.path.join(BASE_DIR, '.django.key')):
-        with open(os.path.join(BASE_DIR, '.django.key'), 'r') as f:
-            SECRET_KEY = f.readline().strip()
-            if len(SECRET_KEY) == SECRET_KEY_LEN:
-                loaded_django_key = True
-            else:
-                print('saved django key is incorrect size, generating new key')
-    if not loaded_django_key:
-        SECRET_KEY = ''.join([random.SystemRandom().choice(ascii_printable) for i in range(0,SECRET_KEY_LEN)])
-        try:
-            with open(os.path.join(BASE_DIR, '.django.key'), 'w') as f:
-                f.write(SECRET_KEY)
-        except OSError as e:
-            print('Could not save django key. This will result in a different key being used each execution')
-            traceback.print_exc()
-
+# Logging
+#
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
+#
+# Force enable logging, to be able to log during base_settings
+LOGGING_CONFIG = None
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': "[%(asctime)s] %(levelname)s [%(name)s:%(lineno)s] %(message)s",
+            'datefmt': "%d/%b/%Y %H:%M:%S",
+        }
+    },
+    'handlers': {
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'standard',
+        },
+    },
+    'loggers': {
+        '': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+        },
+    },
+}
+import logging.config
+logging.config.dictConfig(LOGGING)
+
+
+# Token service configuration
+#
+# SECURITY WARNING: keep the secret key used in production secret!
+from token_service.base_settings import *
+
+SECRET_KEY = make_secret_key()
+DB_KEY = get_db_key()
+
+ADMIN_KEY = get_admin_key()
+
+DATABASES = {
+    'default': make_database(),
+}
+
+load_json_config()
+
+#
+# Django configuration
+#
 
 ALLOWED_HOSTS = ['test.commonsshare.org']
 
@@ -72,6 +88,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+MIDDLEWARE_CLASSES = MIDDLEWARE  # django < 20 compatibility
 
 ROOT_URLCONF = 'microservice.urls'
 
@@ -93,83 +110,6 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'microservice.wsgi.application'
 
-
-# Database
-# https://docs.djangoproject.com/en/2.0/ref/settings/#databases
-
-with open('/etc/auth_microservice/db.credentials', 'r') as f:
-    d = json.loads(f.read())
-    host = d['host']
-    port = d['port']
-    user = d['user']
-    password = d['password']
-
-KEY_LEN = 32
-with open('/etc/auth_microservice/db.key', 'r') as f:
-    d = f.readline().strip()
-    if len(d) != KEY_LEN * 2:
-        print('db key file must contain a 64 byte hexidecimal string')
-    DB_KEY = binascii.unhexlify(d.encode('utf-8'))
-    crypt.instance = crypt.Crypt(DB_KEY)
-    if DEBUG:
-        print("DB_KEY: " + str(DB_KEY))
-
-ADMIN_KEY_LEN = 32
-with open('/etc/auth_microservice/admin.key', 'r') as f:
-    d = f.readline().strip()
-    if len(d) != ADMIN_KEY_LEN * 2:
-        print('admin key file must contain a 64 byte hexidecimal string')
-    ADMIN_KEY = d.encode('utf-8') # this remains as hex
-    import token_service.config
-    token_service.config.admin_key = ADMIN_KEY
-    if DEBUG:
-        print("ADMIN_KEY: " + str(ADMIN_KEY))
-
-DATABASES = {
-    'default': {
-        #'ENGINE': 'django.db.backends.sqlite3',
-        #'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'auth_microservice',
-        'USER': user,
-        'PASSWORD': password,
-        'HOST': host,
-        'PORT': port,
-    }
-}
-
-
-# Load application configuration
-print('loading configuration')
-with open('/etc/auth_microservice/config.json', 'r') as f:
-    d = json.loads(f.read())
-    if 'providers' not in d:
-        raise RuntimeError('providers missing from config')
-    import token_service.config
-    for tag in d['providers']:
-        p = d['providers'][tag]
-        if 'standard' not in p:
-            raise RuntimeError('provider config did not specify a standard')
-        if p['standard'] == 'OAuth 2.0':
-            assert('authorization_endpoint' in p)
-            assert('token_endpoint' in p)
-        if p['standard'] == 'OpenID Connect':
-            assert('metadata_url' in p)
-    # set defaults if not configured
-    if 'url_expiration_timeout' not in d:
-        d['url_expiration_timeout'] = 60
-    if int(d['url_expiration_timeout']) <= 0:
-        raise RuntimeError('url_expiration_timeout must be a positive integer')
-    else:
-        d['url_expiration_timeout'] = int(d['url_expiration_timeout'])
-
-    if 'real_time_validate_cache_retention_timeout' not in d:
-        d['real_time_validate_cache_retention_timeout'] = 30
-    if int(d['real_time_validate_cache_retention_timeout']) < 0:
-        raise RuntimeERror('real_time_validate_cache_retention_timeout must be a positive integer')
-    else:
-        d['real_time_validate_cache_retention_timeout'] = int(d['real_time_validate_cache_retention_timeout'])
-    token_service.config.Config = d
 
 
 # Password validation
