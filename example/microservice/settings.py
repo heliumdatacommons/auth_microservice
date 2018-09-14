@@ -64,7 +64,9 @@ load_json_config()
 # Django configuration
 #
 
-ALLOWED_HOSTS = ['test.commonsshare.org']
+ALLOWED_HOSTS = [
+    # Add here
+]
 
 
 # Application definition
