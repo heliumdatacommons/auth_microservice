@@ -1,6 +1,8 @@
 {
     "redirect_uri": "https://<my-domain>/authcallback",
-    "callback_queue_len": 50,
+    "url_expiration_timeout": 300,
+    "real_time_validate_default": false,
+    "real_time_validate_cache_retention_timeout": 60,
     "providers": {
         "<provider-tag-1>": {
             "standard": "OpenID Connect",
