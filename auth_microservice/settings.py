@@ -92,7 +92,7 @@ MIDDLEWARE = [
 ]
 MIDDLEWARE_CLASSES = MIDDLEWARE  # django < 20 compatibility
 
-ROOT_URLCONF = 'microservice.urls'
+ROOT_URLCONF = 'auth_microservice.urls'
 
 TEMPLATES = [
     {
@@ -110,7 +110,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'microservice.wsgi.application'
+WSGI_APPLICATION = 'auth_microservice.wsgi.application'
 
 
 
