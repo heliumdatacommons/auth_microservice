@@ -17,6 +17,17 @@ except NameError:
     # FileNotFoundError doesn't exist in py27, but it is really an IOError anyway
     FileNotFoundError = IOError
 
+try:
+    basestring
+except NameError:
+    # basestring doesn't exist in py3
+    # (or better yet: str in py27 doesn't include unicode)
+    basestring = str
+
+
+def is_str(s):
+    return isinstance(s, basestring)
+
 
 def logging_sensitive(*args, **kwargs):
     """
@@ -68,7 +79,8 @@ def list_subset(A, B):
 
 
 def sha256(s):
-    if not isinstance(s, str):
+    if not is_str(s):
+        logging.debug("not a string instance: %s", s)
         return None
     hasher = hashlib.sha256()
     hasher.update(s.encode('utf-8'))
@@ -76,7 +88,7 @@ def sha256(s):
 
 
 def is_sock(path):
-    if not path or not isinstance(path, str):
+    if not path or not is_str(path):
         return False
     try:
         file_stat = os.stat(path)

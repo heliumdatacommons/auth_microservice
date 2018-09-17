@@ -46,7 +46,7 @@ def create_key(request):
         return _http_response(HttpResponseBadRequest, 'must provide owner string')
     key = util.generate_nonce(64)
     key_hash = util.sha256(key)
-    logging.debug('new key: %s, hash: %s', key, key_hash)
+    logging.debug('new key: %s, hash: %s, owner: %s', key, key_hash, owner)
     db_entry = models.API_key(key_hash=key_hash, owner=owner)
     db_entry.save()
     return JsonResponse(status=200, data={'key': key})

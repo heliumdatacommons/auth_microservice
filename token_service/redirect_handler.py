@@ -16,7 +16,7 @@ from django.http import (
         HttpResponseServerError)
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils.timezone import now
-from .util import generate_nonce, build_redirect_url, sha256
+from .util import generate_nonce, build_redirect_url, sha256, is_str
 from .config import Config
 # Moved from lazy import.
 #    TODO: assumed that lazy import was needed for crypt initialisation
@@ -694,7 +694,7 @@ class GlobusRedirectHandler(RedirectHandler):
 
         # link scopes, create if not exist:
         #   for scope in w.scopes.all():
-        if isinstance(token_dict['scope'], str):
+        if is_str(token_dict['scope']):
             s, created = models.Scope.objects.get_or_create(name=token_dict['scope'])
             token.scopes.add(s)
         return (True, '', user, token, nonce)
