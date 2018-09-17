@@ -23,6 +23,11 @@ Config = config.Config
 access_token_validation_cache = {}
 
 
+def _http_response(klass, msg):
+    logging.debug("%s %s", klass.__name__, msg)
+    return klass(msg)
+
+
 @require_http_methods(['GET'])
 def create_key(request):
     authorization = request.META.get('HTTP_AUTHORIZATION')
@@ -32,13 +37,13 @@ def create_key(request):
     if m:
         received_key = m.group(1)
         if received_key != config.admin_key:
-            HttpResponseForbidden('must provide admin credentials')
+            return _http_response(HttpResponseForbidden, 'must provide admin credentials')
     else:
-        return HttpResponseForbidden('must provide credentials')
+        return _http_response(HttpResponseForbidden, 'must provide credentials')
 
     owner = request.GET.get('owner')
     if not owner:
-        return HttpResponseBadRequest('must provider owner string')
+        return _http_response(HttpResponseBadRequest, 'must provider owner string')
     key = util.generate_nonce(64)
     key_hash = util.sha256(key)
     logging.debug('new key: %s, hash: %s', key, key_hash)
@@ -170,13 +175,13 @@ def require_valid_api_key_or_user_token(func):
         if t:
             kwargs['token'] = t
             return func(*args, **kwargs)
-        return HttpResponseForbidden('invalid authorization')
+        return _http_response(HttpResponseForbidden, 'invalid authorization')
     return wrapper
 
 # def require_valid_user_token(func):
 #     def wrapper(*args, **kwargs):
 #         if not _valid_user_token(*args):
-#             return HttpResponseForbidden('token was not valid')
+#             return _http_response(HttpResponseForbidden, 'token was not valid')
 #         return func(*args, **kwargs)
 #     return wrapper
 
@@ -184,7 +189,7 @@ def require_valid_api_key_or_user_token(func):
 def require_valid_api_key(func):
     def wrapper(*args, **kwargs):
         if not _valid_api_key(*args):
-            return HttpResponseForbidden('must provide valid api key')
+            return _http_response(HttpResponseForbidden, 'must provide valid api key')
         return func(*args, **kwargs)
     return wrapper
 
@@ -248,14 +253,14 @@ def url(request):
     return_to = request.GET.get('return_to')
     if not scope:
         logging.debug('missing scope: %s', scope)
-        return HttpResponseBadRequest('missing scope')
+        return _http_response(HttpResponseBadRequest, 'missing scope')
     else:
         scopes = scope.split(' ')
         if len(scopes) == 0:
-            return HttpResponseBadRequest('no scopes provided')
+            return _http_response(HttpResponseBadRequest, 'no scopes provided')
 
     if not provider:
-        return HttpResponseBadRequest('missing provider')
+        return _http_response(HttpResponseBadRequest, 'missing provider')
 
     handler = redirect_handler.get_handler(request)
     if _valid_api_key(request) and return_to:
@@ -274,7 +279,7 @@ def subject_by_nonce(request):
 
     tokens = _get_tokens_by_nonce(nonce, validate=validate)
     if len(tokens) == 0:
-        return HttpResponseNotFound('no token which meets required criteria')
+        return _http_response(HttpResponseNotFound, 'no token which meets required criteria')
     token = tokens[0]
     if now() >= token.expires:
         handler = redirect_handler.get_handler(token=token)
@@ -287,7 +292,7 @@ def token(request):
     nonce = request.GET.get('nonce')
     # api key authentication when no nonce provided
     if not nonce and not _valid_api_key(request):
-        return HttpResponseForbidden('must provide valid api key')
+        return _http_response(HttpResponseForbidden, 'must provide valid api key')
 
     uid = request.GET.get('uid')
     scope = request.GET.get('scope')
@@ -299,14 +304,14 @@ def token(request):
     if not nonce:
         if not scope:
             logging.debug('missing scope: %s', scope)
-            return HttpResponseBadRequest('missing scope')
+            return _http_response(HttpResponseBadRequest, 'missing scope')
         else:
             scopes = scope.split(' ')
             if len(scopes) == 0:
-                return HttpResponseBadRequest('no scopes provided')
+                return _http_response(HttpResponseBadRequest, 'no scopes provided')
 
         if not provider:
-            return HttpResponseBadRequest('missing provider')
+            return _http_response(HttpResponseBadRequest, 'missing provider')
 
         if not uid:
             logging.debug('request received with no uid specified, will only generate url')
@@ -317,7 +322,7 @@ def token(request):
     if nonce:
         token = _get_first_valid_token_by_nonce(nonce)
         if not token:
-            return HttpResponseNotFound('no token which meets required criteria')
+            return _http_response(HttpResponseNotFound, 'no token which meets required criteria')
     else:
         token = _get_first_valid_token(uid, scopes, provider)
         # only allow automatic flow start if queried by (uid,provider,scope), not nonce.
@@ -335,7 +340,7 @@ def token(request):
             return JsonResponse(status=410, data={'msg': 'Token has expired'})
 
     # if return_to:
-    #     return HttpResponseRedirect(util.build_redirect_url(return_to, token))
+    #     return _http_response(HttpResponseRedirect, util.build_redirect_url(return_to, token))
     # else:
     return JsonResponse(status=200, data={
         'access_token': token.access_token,
@@ -366,7 +371,7 @@ def authcallback(request):
 @require_valid_api_key
 def validate_token(request):
     if not _valid_api_key(request):
-        return HttpResponseForbidden('must provide valid api key')
+        return _http_response(HttpResponseForbidden, 'must provide valid api key')
     provider = request.GET.get('provider')
     access_token = request.GET.get('access_token')
     token_validator = redirect_handler.get_validator(provider)
@@ -389,13 +394,13 @@ def _user_from_args(uid, kwargs):
         user = kwargs['token'].user
         logging.debug('got user (sub %s) from bearer token', user.sub)
         if str(user.sub) != str(uid):
-            return None, HttpResponseForbidden('Not authorized to create keys for this uid')
+            return None, _http_response(HttpResponseForbidden, 'Not authorized to create keys for this uid')
     else:
         try:
             user = models.User.objects.get(sub=uid)
             logging.debug('got user from uid %s', uid)
         except ObjectDoesNotExist:
-            return None, HttpResponseBadRequest('User does not exist')
+            return None, _http_response(HttpResponseBadRequest, 'User does not exist')
 
     return user, None
 
@@ -484,11 +489,11 @@ def action_user_key(request, uid, key_id, **kwargs):
 def verify_user_key(request, **kwargs):
     key_param = request.GET.get('key')
     if not key_param:
-        return HttpResponseBadRequest('Missing required key param')
+        return _http_response(HttpResponseBadRequest, 'Missing required key param')
     uid_param = request.GET.get('uid')
     user_param = request.GET.get('username')
     #    if not uid_param and not user_param:
-    #        return HttpResponseBadRequest('Missing required param, one of [uid, username]')
+    #        return _http_response(HttpResponseBadRequest, 'Missing required param, one of [uid, username]')
     # look up user
     # ret same err for all user lookup failures
     invalid_user = JsonResponse(status=400, data={'message': 'User not found which matches criteria'})
