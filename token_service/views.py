@@ -26,9 +26,9 @@ access_token_validation_cache = {}
 @require_http_methods(['GET'])
 def create_key(request):
     authorization = request.META.get('HTTP_AUTHORIZATION')
-    # TODO: replcae with sensitive logging?
+    # TODO: replace with sensitive logging?
     logging.debug('create_key authorization: %s', authorization)
-    m = re.match(r'^Basic (\w{64})', authorization)
+    m = re.match(r'^Basic (\w{64})', authorization or '')
     if m:
         received_key = m.group(1)
         if received_key != config.admin_key:
