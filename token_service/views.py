@@ -1,3 +1,4 @@
+import logging
 import re
 import time
 import logging
@@ -25,7 +26,8 @@ access_token_validation_cache = {}
 @require_http_methods(['GET'])
 def create_key(request):
     authorization = request.META.get('HTTP_AUTHORIZATION')
-    print('create_key authorization: ' + authorization)
+    # TODO: replcae with sensitive logging?
+    logging.debug('create_key authorization: %s', authorization)
     m = re.match(r'^Basic (\w{64})', authorization)
     if m:
         received_key = m.group(1)
@@ -39,7 +41,7 @@ def create_key(request):
         return HttpResponseBadRequest('must provider owner string')
     key = util.generate_nonce(64)
     key_hash = util.sha256(key)
-    print('new key: {}, hash: {}'.format(key, key_hash))
+    logging.debug('new key: %s, hash: %s', key, key_hash)
     db_entry = models.API_key(key_hash=key_hash, owner=owner)
     db_entry.save()
     return JsonResponse(status=200, data={'key': key})
@@ -61,7 +63,7 @@ def _get_tokens(uid, scopes, provider, validate=False):
     Note that enabling validate will provide real-time token revocation checks with the provider, but this could
     have a serious performance impact.
     '''
-    print('querying for tokens(uid,scopes,provider): ({},{},{})'.format(uid, scopes, provider))
+    logging.debug('querying for tokens: uid %s, scopes %s, provider %s', uid, scopes, provider)
     # Django can do a filter using a subset operation for linked many-to-many, but not a filter using superset
     # we need to find tokens whose scopes are a superset of the scopes list being requested
     queryset = models.Token.objects.filter(
@@ -111,7 +113,7 @@ def prune_invalid(tokens):
                 if cache_entry['val']:
                     valid.append(t)
                 # within validation cache window for this token
-                print('token validation cached for ({},{})'.format(t.access_token, t.provider))
+                logging.debug('token validation cached for acces_token %s provider %s', t.access_token, t.provider)
                 continue
         if len(t.access_token) and len(t.provider):
             if t.provider in validators:
@@ -127,7 +129,7 @@ def prune_invalid(tokens):
                 'val': active,
             }
             if active:
-                print('token [{}] belonging to uid [{}] was valid'.format(t.access_token, t.user.sub))
+                logging.debug('token %s belonging to uid %s was valid', t.access_token, t.user.sub)
                 valid.append(t)
             else:
                 # try refresh
@@ -136,10 +138,10 @@ def prune_invalid(tokens):
                     t = handler._refresh_token(t)
                     valid.append(t)
                 except RuntimeError:
-                    print('token [{}] belonging to uid [{}] was revoked'.format(t.access_token, t.user.sub))
+                    logging.debug('token %s belonging to uid %s was revoked', t.access_token, t.user.sub)
                     t.delete()
         else:
-            print('token found with no access_token or provider field: ' + str(t))
+            logging.debug('token %s found with no access_token or provider field', t)
     return valid
 
 
@@ -153,7 +155,7 @@ def _get_first_valid_token_by_nonce(nonce):
 
 
 def _get_tokens_by_nonce(nonce, validate=False):
-    print('querying for tokens(nonce): ({})'.format(nonce))
+    logging.debug('querying for tokens nonce: %s', nonce)
     tokens = models.Token.objects.filter(nonce__value=nonce).order_by('expires')  # this nonce is not encrypted
     if validate:
         tokens = prune_invalid(tokens)
@@ -190,7 +192,7 @@ def require_valid_api_key(func):
 def _valid_user_token(request):
     authorization = request.META.get('HTTP_AUTHORIZATION')
     if not authorization:
-        print('NO HTTP_AUTHORIZATION')
+        logging.debug('No HTTP_AUTHORIZATION')
         return False
     m = re.match(r'^Bearer\W+(\w+)', authorization)
     if m:
@@ -202,14 +204,14 @@ def _valid_user_token(request):
         if len(tokens) > 0:
             return tokens[0]
     else:
-        print('malformed Authorization Bearer header: ' + str(authorization))
+        logging.debug('malformed Authorization Bearer header: %s', authorization)
     return False
 
 
 def _valid_api_key(request):
     authorization = request.META.get('HTTP_AUTHORIZATION')
     if not authorization:
-        print('NO HTTP_AUTHORIZATION')
+        logging.debug('No HTTP_AUTHORIZATION')
         return False
     m = re.match(r'^Basic\W+(\w+)', authorization)
     if m:
@@ -217,21 +219,22 @@ def _valid_api_key(request):
         received_hash = util.sha256(received_key)
         util.logging_sensitive('_valid_api_key received key: ' + str(received_key))
         util.logging_sensitive('_valid_api_key received hash: ' + str(received_hash))
-        # print('_valid_api_key received_hash: ' + received_hash)
         # keys are unencrypted hashes
         keys = models.API_key.objects.filter(key_hash=received_hash)
         # for debugging purposes only, checking for multiple entries with same key hash
         if keys.count() > 1:
-            logging.warn('found multiple matching key entries')
+            logging.warn('found multiple matching key entries (will use first one)')
             for db_key in keys:
-                logging.debug('found hash: ' + db_key.key_hash + ' owner: ' + db_key.owner)
+                logging.debug('found hash: %s owner: %s', db_key.key_hash, db_key.owner)
         if keys.count() > 0:
-            logging.debug('_valid_api_key authenticated key for owner [{}] with hash [{}]'.format(keys[0].owner, received_hash))
+            logging.debug('_valid_api_key authenticated key for owner [%s] with hash [%s]',
+                          keys[0].owner, received_hash)
             return True
         if keys.count() == 0:
-            logging.warn('_valid_api_key received invalid api key: ' + received_key)
+            logging.debug('_valid_api_key received invalid api key: %s', received_key)
     else:
-        logging.error('malformed Authorization Basic header: ' + str(authorization))
+        logging.error('malformed Authorization Basic header: ', authorization)
+
     return False
 
 
@@ -244,7 +247,7 @@ def url(request):
     provider = request.GET.get('provider')
     return_to = request.GET.get('return_to')
     if not scope:
-        print('scope: ' + str(scope))
+        logging.debug('missing scope: %s', scope)
         return HttpResponseBadRequest('missing scope')
     else:
         scopes = scope.split(' ')
@@ -259,7 +262,7 @@ def url(request):
         url, nonce = handler.add(None, scopes, provider, return_to)
     else:
         if return_to:
-            print('invalid api key, ignoring return_to param')
+            logging.debug('invalid api key, ignoring return_to param')
         url, nonce = handler.add(None, scopes, provider)
     return JsonResponse(status=200, data={'authorization_url': url, 'nonce': nonce})
 
@@ -295,7 +298,7 @@ def token(request):
     # nonce takes precedence over (scope,provider,uid) combination
     if not nonce:
         if not scope:
-            print('scope: ' + str(scope))
+            logging.debug('missing scope: %s', scope)
             return HttpResponseBadRequest('missing scope')
         else:
             scopes = scope.split(' ')
@@ -306,7 +309,7 @@ def token(request):
             return HttpResponseBadRequest('missing provider')
 
         if not uid:
-            print('request received with no uid specified, will only generate url')
+            logging.debug('request received with no uid specified, will only generate url')
             handler = redirect_handler.RedirectHandler()
             url, nonce = handler.add(uid, scopes, provider, return_to)
             return JsonResponse(status=401, data={'authorization_url': url, 'nonce': nonce})
@@ -369,7 +372,7 @@ def validate_token(request):
     token_validator = redirect_handler.get_validator(provider)
 
     validate_response = token_validator.validate(access_token, provider)
-    print('validate_response: ' + str(validate_response))
+    logging.debug('validate_response: %s', validate_response)
     return JsonResponse(status=200, data=validate_response)
 
 
@@ -380,6 +383,23 @@ def validate_token(request):
 #    path('apikey/<str:uid>/new', views.new_user_key),
 #    path('apikey/<str:uid>/<str:key_id>', views.action_user_key),
 #    path('apikey/verify', views.verify_user_key),
+
+def _user_from_args(uid, kwargs):
+    if kwargs.get('token', None):
+        user = kwargs['token'].user
+        logging.debug('got user (sub %s) from bearer token', user.sub)
+        if str(user.sub) != str(uid):
+            return None, HttpResponseForbidden('Not authorized to create keys for this uid')
+    else:
+        try:
+            user = models.User.objects.get(sub=uid)
+            logging.debug('got user from uid %s', uid)
+        except ObjectDoesNotExist:
+            return None, HttpResponseBadRequest('User does not exist')
+
+    return user, None
+
+
 @require_http_methods(['GET'])
 @require_valid_api_key_or_user_token
 def list_user_keys(request, uid, **kwargs):
@@ -390,17 +410,9 @@ def list_user_keys(request, uid, **kwargs):
     creation_time = models.DateTimeField(auto_now_add=True)
     user = models.ForeignKey('User', on_delete=models.CASCADE)
     '''
-    if kwargs.get('token', None):
-        user = kwargs['token'].user
-        print('got user from bearer token')
-        if str(user.sub) != str(uid):
-            return HttpResponseForbidden('Not authorized to create keys for this uid')
-    else:
-        try:
-            user = models.User.objects.get(id=uid)
-            print('got user from uid')
-        except ObjectDoesNotExist:
-            return HttpResponseBadRequest('User does not exist')
+    user, resp = _user_from_args(uid, kwargs)
+    if resp:
+        return resp
 
     # get keys for this uid
     ret_list = []
@@ -420,22 +432,15 @@ def list_user_keys(request, uid, **kwargs):
 @require_http_methods(['GET'])
 @require_valid_api_key_or_user_token
 def new_user_key(request, uid, **kwargs):
-    if kwargs.get('token', None):
-        user = kwargs['token'].user
-        print('got user from bearer token')
-        if str(user.sub) != str(uid):
-            return HttpResponseForbidden('Not authorized to create keys for this uid')
-    else:
-        try:
-            user = models.User.objects.get(sub=uid)
-            print('got user from uid')
-        except ObjectDoesNotExist:
-            return HttpResponseBadRequest('User does not exist')
+    user, resp = _user_from_args(uid, kwargs)
+    if resp:
+        return resp
+
     key_label = request.GET.get('label')
     key_val = util.generate_base64(64)
     key_val = util.sanitize_base64(key_val)
     key_hash = util.sha256(key_val)
-    print('key_hash: {}'.format(key_hash))
+    logging.debug('key_hash: %s', key_hash)
     key_id = util.generate_nonce(32)
     # ensure unique
     while len(models.User_key.objects.filter(id=key_id)) > 0:
@@ -453,17 +458,9 @@ def new_user_key(request, uid, **kwargs):
 @require_http_methods(['GET', 'DELETE'])
 @require_valid_api_key_or_user_token
 def action_user_key(request, uid, key_id, **kwargs):
-    if kwargs.get('token', None):
-        user = kwargs['token'].user
-        print('got user from bearer token')
-        if str(user.sub) != str(uid):
-            return HttpResponseForbidden('Not authorized to create keys for this uid')
-    else:
-        try:
-            user = models.User.objects.get(sub=uid)
-            print('got user from uid')
-        except ObjectDoesNotExist:
-            return HttpResponseBadRequest('User does not exist')
+    user, resp = _user_from_args(uid, kwargs)
+    if resp:
+        return resp
 
     # do operation
     if request.method == 'GET':
@@ -478,7 +475,7 @@ def action_user_key(request, uid, key_id, **kwargs):
             key = models.User_key.objects.get(user__sub=uid, id=key_id)
             key.delete()
         except ObjectDoesNotExist:
-            print('key already did not exist')
+            logging.debug('key did not exist, nothing to do')
         return JsonResponse(status=200, data={'message': 'Successfully deleted'})
 
 
@@ -506,7 +503,7 @@ def verify_user_key(request, **kwargs):
                 return invalid_user
         user = user1 if user1 else user2
     except ObjectDoesNotExist as e:
-        print(repr(e))
+        logging.debug("invalid user exception %s", repr(e))
         return invalid_user
     if user:
         logging.debug('verifying key for user: ' + user.user_name)
