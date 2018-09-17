@@ -5,6 +5,7 @@ import jwt
 import logging
 import requests
 from calendar import timegm
+
 try:
     from urllib.parse import quote
 except ImportError:
