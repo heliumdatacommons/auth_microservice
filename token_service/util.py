@@ -9,7 +9,7 @@ try:
     from urllib.parse import quote
 except ImportError:
     from urllib import quote
-from token_service.config import debug_sensitive
+from token_service import config
 
 try:
     FileNotFoundError
@@ -23,8 +23,10 @@ def logging_sensitive(*args, **kwargs):
     Special debug logging, that might log encrypted/decrypted data.
     Only when debug_sensitive is enabled in token_service.config
     """
-    if debug_sensitive:
+    if config.debug_sensitive:
         logging.debug(*args, **kwargs)
+    else:
+        logging.debug("sensitive false: non-templated message %s", args[0])
 
 
 def generate_nonce(length):
