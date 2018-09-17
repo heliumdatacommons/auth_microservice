@@ -32,7 +32,7 @@ def generate_nonce(length):
     Returns a random hex string with provided length. URL safe.
     String returned contains (1/2 * length) bytes of urandom entropy.
     '''
-    nonce = os.urandom(math.ceil(length))
+    nonce = os.urandom(int(math.ceil(length)))
 
     return binascii.b2a_hex(nonce)[:length].decode('utf-8')
 
@@ -42,7 +42,7 @@ def generate_base64(length):
     Returns a random base64 string with provided length. Not URL safe.
     String returned contains (3/4 * length) bytes of urandom entropy.
     '''
-    nonce = os.urandom(math.ceil(int(float(length)*3/4)))
+    nonce = os.urandom(int(math.ceil(int(float(length)*3/4))))
     return base64.b64encode(nonce).decode('utf-8')
 
 
