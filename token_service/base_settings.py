@@ -34,6 +34,7 @@ TOKEN_SERVICE_DB_CFG = os.path.join(TOKEN_SERVICE_BASEDIR, 'db.credentials')
 TOKEN_SERVICE_DB_KEY = os.path.join(TOKEN_SERVICE_BASEDIR, 'db.key')
 TOKEN_SERVICE_ADMIN_KEY = os.path.join(TOKEN_SERVICE_BASEDIR, 'admin.key')
 TOKEN_SERVICE_CONFIG = os.path.join(TOKEN_SERVICE_BASEDIR, 'config.json')
+TOKEN_SERVICE_DJANGO_KEY_ALT = os.path.join(TOKEN_SERVICE_BASEDIR, 'django.key')
 
 
 def make_secret_key(keylen=SECRET_KEY_LEN):
@@ -41,23 +42,29 @@ def make_secret_key(keylen=SECRET_KEY_LEN):
         logging.info('django secret key present')
         secret_key = locals()['SECRET_KEY']
     else:
-        logging.info('loading django secret key from %s', TOKEN_SERVICE_DJANGO_KEY)
         loaded_django_key = False
-        if os.path.isfile(TOKEN_SERVICE_DJANGO_KEY):
-            with open(TOKEN_SERVICE_DJANGO_KEY, 'r') as f:
-                secret_key = f.readline().strip()
-                if len(secret_key) == keylen:
-                    loaded_django_key = True
-                else:
-                    logging.warn('saved django key is incorrect size, generating new key')
+        for keyfn in [TOKEN_SERVICE_DJANGO_KEY, TOKEN_SERVICE_DJANGO_KEY_ALT]:
+            if os.path.isfile(keyfn):
+                logging.info('Trying to load django secret key from %s', keyfn)
+                with open(keyfn, 'r') as f:
+                    secret_key = f.readline().strip()
+                    if len(secret_key) == keylen:
+                        loaded_django_key = True
+                        break
+                    else:
+                        logging.warn('saved django key %s has incorrect size', keyfn)
+            else:
+                logging.info('No django secret key %s', keyfn)
         if not loaded_django_key:
+            logging.info('No django secret key loaded, trying to create one at %s', TOKEN_SERVICE_DJANGO_KEY)
             ascii_printable = [chr(c) for c in range(ord('!'), ord('~')+1)]
             secret_key = ''.join([random.SystemRandom().choice(ascii_printable) for i in range(0, keylen)])
             try:
                 with open(TOKEN_SERVICE_DJANGO_KEY, 'w') as f:
                     f.write(secret_key)
             except OSError:
-                logging.error('Could not save django key. This will result in a different key being used each execution')
+                logging.error('Could not save django key %s. Will use a different key being for each execution',
+                              TOKEN_SERVICE_DJANGO_KEY)
                 traceback.print_exc()
     return secret_key
 
