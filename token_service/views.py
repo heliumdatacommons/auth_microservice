@@ -43,7 +43,7 @@ def create_key(request):
 
     owner = request.GET.get('owner')
     if not owner:
-        return _http_response(HttpResponseBadRequest, 'must provider owner string')
+        return _http_response(HttpResponseBadRequest, 'must provide owner string')
     key = util.generate_nonce(64)
     key_hash = util.sha256(key)
     logging.debug('new key: %s, hash: %s', key, key_hash)
