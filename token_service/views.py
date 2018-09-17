@@ -1,5 +1,6 @@
 import re
 import time
+import logging
 from django.http import (
         HttpResponseBadRequest,
         JsonResponse,
@@ -209,25 +210,27 @@ def _valid_api_key(request):
     if not authorization:
         print('NO HTTP_AUTHORIZATION')
         return False
-    m = re.match(r'^Basic\W+(\w{64})', authorization)
+    m = re.match(r'^Basic\W+(\w+)', authorization)
     if m:
         received_key = m.group(1)
         received_hash = util.sha256(received_key)
+        util.logging_sensitive('_valid_api_key received key: ' + str(received_key))
+        util.logging_sensitive('_valid_api_key received hash: ' + str(received_hash))
         # print('_valid_api_key received_hash: ' + received_hash)
         # keys are unencrypted hashes
         keys = models.API_key.objects.filter(key_hash=received_hash)
         # for debugging purposes only, checking for multiple entries with same key hash
         if keys.count() > 1:
-            print('FOUND MULTIPLE MATCHING KEY ENTRIES')
+            logging.warn('found multiple matching key entries')
             for db_key in keys:
-                print('found hash: ' + db_key.key_hash + ' owner: ' + db_key.owner)
+                logging.debug('found hash: ' + db_key.key_hash + ' owner: ' + db_key.owner)
         if keys.count() > 0:
-            print('_valid_api_key authenticated key for owner [{}] with hash [{}]'.format(keys[0].owner, received_hash))
+            logging.debug('_valid_api_key authenticated key for owner [{}] with hash [{}]'.format(keys[0].owner, received_hash))
             return True
         if keys.count() == 0:
-            print('_valid_api_key received invalid api key: ' + received_key)
+            logging.warn('_valid_api_key received invalid api key: ' + received_key)
     else:
-        print('malformed Authorization Basic header: ' + str(authorization))
+        logging.error('malformed Authorization Basic header: ' + str(authorization))
     return False
 
 
@@ -475,7 +478,7 @@ def action_user_key(request, uid, key_id, **kwargs):
 
 
 @require_http_methods(['GET'])
-@require_valid_api_key  # for this user key endpoint, only allow applications, not users
+@require_valid_api_key # for this user key endpoint, only allow applications, not users
 def verify_user_key(request, **kwargs):
     key_param = request.GET.get('key')
     if not key_param:
@@ -500,7 +503,8 @@ def verify_user_key(request, **kwargs):
     except ObjectDoesNotExist as e:
         print(repr(e))
         return invalid_user
-
+    if user:
+        logging.debug('verifying key for user: ' + user.user_name)
     # now lookup key
     try:
         key_hash = util.sha256(key_param)
@@ -512,3 +516,4 @@ def verify_user_key(request, **kwargs):
             return JsonResponse(status=200, data={'valid': True, 'uid': key.user.id, 'user_name': key.user.user_name})
     except ObjectDoesNotExist as e:
         return JsonResponse(status=401, data={'valid': False})
+
