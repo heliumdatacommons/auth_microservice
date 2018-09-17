@@ -22,6 +22,7 @@ except ImportError:
 from . import views
 
 urlpatterns = [
+    # admin (requires admin key)
     url('^admin/key/?$', views.create_key, name='create_key'),
     # public
     url('^subject_by_nonce/?$', views.subject_by_nonce, name='subject_by_nonce'),
@@ -33,8 +34,9 @@ urlpatterns = [
     url('^validate_token/?$', views.validate_token, name='validate_token'),
 
     # api keys
+    url('^apikey/verify/?$', views.verify_user_key), # must be before uid urls to avoid shadowing
     url('^apikey/(?P<uid>[^/]+)/?$', views.list_user_keys),
     url('^apikey/(?P<uid>[^/]+)/new/?$', views.new_user_key),
     url('^apikey/(?P<uid>[^/]+)/(?P<key_id>[^/]+)/?$', views.action_user_key),
-    url('^apikey/verify/?$', views.verify_user_key)
+
 ]
