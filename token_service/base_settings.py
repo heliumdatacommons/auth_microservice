@@ -70,7 +70,7 @@ def make_secret_key(keylen=SECRET_KEY_LEN):
 
 
 def make_database():
-    logging.info('creating database')
+    logging.info('generate django database configuration')
     with open(TOKEN_SERVICE_DB_CFG, 'r') as f:
         d = json.loads(f.read())
         host = d['host']
@@ -92,7 +92,7 @@ def make_database():
 
 def make_database_mem():
     """In memory sqlite config; do NOT use in production"""
-    logging.info('creating memory database')
+    logging.info('generate django memory database configuration')
     return {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': ':memory:',
