@@ -48,7 +48,7 @@ class Crypt(object):
         de_encr = aes.decrypt(de_enco[AES.block_size:])
         logging_sensitive('crypt.decrypt de_encr: %s', de_encr)
         # unpad
-        pad_n = de_encr[-1]
+        pad_n = ord(de_encr[-1])
         de_encr = de_encr[:-pad_n]
         de_encr = de_encr.decode('utf-8')
         logging_sensitive('crypt.decrypt de_encr unpad: %s', de_encr)
