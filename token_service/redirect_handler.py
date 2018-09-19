@@ -171,7 +171,7 @@ class RedirectHandler(object):
         access_token = body['access_token']
         expires_in = body['expires_in']
         refresh_token = body['refresh_token']
-        self.debug('token_response: %s', body)
+        logging.debug('token_response: %s', body)
         # convert expires_in to timestamp
         expire_time = now() + datetime.timedelta(seconds=expires_in)
         # expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
@@ -179,7 +179,7 @@ class RedirectHandler(object):
         # expand the id_token to the encoded json object
         # TODO signature validation if signature provided
         id_token = jwt.decode(id_token, verify=False)
-        self.debug('id_token: %s', id_token)
+        logging.debug('id_token: %s', id_token)
 
         sub = id_token['sub']
         issuer = id_token['iss']
