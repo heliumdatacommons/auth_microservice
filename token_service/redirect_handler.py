@@ -23,6 +23,81 @@ from .config import Config
 #          but there's a runtime exception when using non-initialised crypt
 from . import models
 
+STANDARD_OPENID_CONNECT = 'OpenID Connect'
+STANDARD_OAUTH2 = 'OAuth 2.0'
+SUPPORTED_STANDARDS = [STANDARD_OPENID_CONNECT, STANDARD_OAUTH2]
+
+
+def is_supported(provider):
+    return Config['providers'][provider]['standard'] in SUPPORTED_STANDARDS
+
+
+def is_openid(provider):
+    return Config['providers'][provider]['standard'] == STANDARD_OPENID_CONNECT
+
+
+def is_oauth2(provider):
+    return Config['providers'][provider]['standard'] == STANDARD_OAUTH2
+
+
+def get_or_update_OIDC_cache(provider_tag):
+    provider_config = Config['providers'][provider_tag]
+    meta_url = provider_config['metadata_url']
+    cache = models.OIDCMetadataCache.objects.filter(provider=provider_tag)
+    if cache.count() == 0 or (cache[0].retrieval_time + datetime.timedelta(hours=24)) < now():
+        # not cached, or cached entry is more than 1 day old
+        response = requests.get(meta_url)
+        if response.status_code != 200:
+            raise RuntimeError('could not retrieve openid metadata from {}, returned error: {}\n{}'.format(
+                meta_url, response.status_code, response.content.decode('utf-8')))
+        content = response.content.decode('utf-8')
+        meta = json.loads(content)
+        # cache this metadata
+        if cache.count() == 0:  # create
+            logging.info('Creating new OIDC metadata cache entry for [{}]'.format(provider_tag))
+            models.OIDCMetadataCache.objects.create(provider=provider_tag, value=content)
+        else:  # update
+            logging.info('Updating OIDC metadata cache for [{}]'.format(provider_tag))
+            cache[0].value = content
+            cache[0].retrieval_time = now()
+            cache[0].save()
+    else:
+        meta = json.loads(cache[0].value)
+    return meta
+
+
+def get_provider_config(provider, key):
+    """
+    Retrieve key from provider config.
+    If provider is openid, and key is not in the config,
+        (try to) get the key from the metadata
+    Raises a RuntimeError when provider standard is not supported.
+    Raises a KeyError on failure to get key
+    """
+    config = Config['providers'][provider]
+
+    if not is_supported(provider):
+        raise RuntimeError('could not get {} from provider {} with unrecognized standard {}'.format(
+            key, provider, config['standard']))
+
+    try:
+        data = config[key]
+        logging.debug("Got %s for %s from provider %s config", data, key, provider)
+        return data
+    except KeyError as error:
+        if is_openid(provider):
+            meta = get_or_update_OIDC_cache(provider)
+            try:
+                data = meta[key]
+                logging.debug("Got %s for %s from provider %s openid metadata", data, key, provider)
+                return data
+            except KeyError as error:
+                logging.warn("No %s config from openid provider", key)
+                raise error
+        else:
+            logging.warn("No %s config from provider", key)
+            raise error
+
 
 class RedirectHandler(object):
     '''
@@ -123,15 +198,12 @@ class RedirectHandler(object):
                 logging.warn('authorization url has expired object: %s', vars(w))
                 return HttpResponseBadRequest('This authorization url has expired, please retry')
             provider = w.provider
-            if self.is_openid(provider):
-                meta = models.OIDCMetadataCache.objects.get(provider=provider).value
-                meta = json.loads(meta)
-                token_endpoint = meta['token_endpoint']
-            else:  # require non-openid providers to specify the token endpoint
-                token_endpoint = Config['providers'][provider]['token_endpoint']
+            token_endpoint = get_provider_config(provider, 'token_endpoint')
+
             client_id = Config['providers'][provider]['client_id']
             client_secret = Config['providers'][provider]['client_secret']
             redirect_uri = Config['redirect_uri']
+
             token_response = self._token_request(
                     token_endpoint,
                     client_id,
@@ -241,24 +313,17 @@ class RedirectHandler(object):
         headers = {
             'Authorization': 'Bearer ' + str(access_token)
         }
-        validate_type = None
-        # if validation_url:
-        #     # use custom url if provided
-        #     endpoint = validation_url
-        if Config['providers'][provider].get('introspection_endpoint'):
-            # attempt to use configured introspection endpoint
-            endpoint = Config['providers'][provider]['introspection_endpoint']
-            validate_type = 'introspection'
-        else:
-            # fall back to userinfo endpoint
-            if self.is_openid(provider):
-                meta = json.loads(models.OIDCMetadataCache.objects.get(provider=provider).value)
-                endpoint = meta['userinfo_endpoint']
-            else:  # non oidc providers must specify a userinfo_endpoint on the config file
-                endpoint = Config['providers'][provider]['userinfo_endpoint']
 
-        if validate_type == 'introspection':
-            endpoint = endpoint % access_token
+        try:
+            ept = get_provider_config(provider, 'introspection_endpoint')
+            # TODO: why would the endpoint url support templating?
+            endpoint = ept % access_token
+            logging.debug("Got introspection endpoint %s (from config %s)", endpoint, ept)
+        except KeyError:
+            # non oidc providers must specify a userinfo_endpoint on the config file
+            endpoint = get_provider_config(provider, 'userinfo_endpoint')
+            logging.debug("No introspection endpoint, using userinfo endpoint %s", endpoint)
+
         response = requests.get(endpoint, headers=headers)
         content = response.content.decode('utf-8')
         if response.status_code != 200:
@@ -291,19 +356,14 @@ class RedirectHandler(object):
         return response
 
     def _refresh_token(self, token_model):
-        provider_config = Config['providers'][token_model.provider]
-        if self.is_openid(token_model.provider):
-            meta = self._get_or_update_OIDC_cache(token_model.provider)
-            token_endpoint = meta['token_endpoint']
-        elif self.is_oauth2(token_model.provider):
-            token_endpoint = provider_config['token_endpoint']
-        else:
-            raise RuntimeError('could not refresh unrecognized provider standard {}'.format(token_model.provider))
+        provider = token_model.provider
+        token_endpoint = get_provider_config(provider, 'token_endpoint')
 
         data = {
             'grant_type': 'refresh_token',
             'refresh_token': token_model.refresh_token
         }
+        provider_config = Config['providers'][provider]
         client_id = provider_config['client_id']
         client_secret = provider_config['client_secret']
         authorization = base64.b64encode((client_id + ':' + client_secret).encode('utf-8'))
@@ -328,12 +388,6 @@ class RedirectHandler(object):
             token_model.save()
             return token_model
 
-    def is_openid(self, provider):
-        return Config['providers'][provider]['standard'] == 'OpenID Connect'
-
-    def is_oauth2(self, provider):
-        return Config['providers'][provider]['standard'] == 'OAuth 2.0'
-
     def is_nonce_unique(self, nonce):
         # TODO update with https://github.com/heliumdatacommons/auth_microservice/issues/4 when resolved
         queryset = models.Nonce.objects.all()
@@ -342,58 +396,28 @@ class RedirectHandler(object):
                 return False
         return True
 
-    def _get_or_update_OIDC_cache(self, provider_tag):
-        provider_config = Config['providers'][provider_tag]
-        meta_url = provider_config['metadata_url']
-        cache = models.OIDCMetadataCache.objects.filter(provider=provider_tag)
-        if cache.count() == 0 or (cache[0].retrieval_time + datetime.timedelta(hours=24)) < now():
-            # not cached, or cached entry is more than 1 day old
-            response = requests.get(meta_url)
-            if response.status_code != 200:
-                raise RuntimeError('could not retrieve openid metadata, returned error: {}\n{}'.format(
-                    response.status_code, response.content.decode('utf-8')))
-            content = response.content.decode('utf-8')
-            meta = json.loads(content)
-            # cache this metadata
-            if cache.count() == 0:  # create
-                logging.info('Creating new OIDC metadata cache entry for [{}]'.format(provider_tag))
-                models.OIDCMetadataCache.objects.create(provider=provider_tag, value=content)
-            else:  # update
-                logging.info('Updating OIDC metadata cache for [{}]'.format(provider_tag))
-                cache[0].value = content
-                cache[0].retrieval_time = now()
-                cache[0].save()
-        else:
-            meta = json.loads(cache[0].value)
-        return meta
-
     def _generate_authorization_url(self, state, nonce, scopes, provider_tag):
         '''
         Create a proper authorization url based on provided parameters
         '''
+        authorization_endpoint = get_provider_config(provider_tag, 'authorization_endpoint')
+
         provider_config = Config['providers'][provider_tag]
         client_id = provider_config['client_id']
         redirect_uri = Config['redirect_uri']
 
         # get auth endpoint
-        if self.is_openid(provider_tag):
-            # openid allowed for endpoint and other value specification within metadata file
-            meta = self._get_or_update_OIDC_cache(provider_tag)
-
-            authorization_endpoint = meta['authorization_endpoint']
+        if is_openid(provider_tag):
             scope = ' '.join(scopes)
             scope = quote(scope)
             additional_params = 'scope=' + scope
             additional_params += '&response_type=code'
             additional_params += '&access_type=offline'
             additional_params += '&prompt=login%20consent'
-        elif self.is_oauth2(provider_tag):
-            authorization_endpoint = provider_config['authorization_endpoint']
+        elif is_oauth2(provider_tag):
             additional_params = ''
             if 'additional_params' in provider_config:
                 additional_params = provider_config['additional_params']
-        else:
-            raise RuntimeError('unknown provider standard: ' + provider_config['standard'])
 
         url = '{}?nonce={}&state={}&redirect_uri={}&client_id={}&{}'.format(
             authorization_endpoint,
@@ -757,7 +781,8 @@ def get_validator(provider=None):
 
 class Validator(object):
     def validate(self, token, provider):
-        endpoint = Config['providers'][provider]['introspection_endpoint']
+        endpoint = get_provider_config(provider, 'introspection_endpoint')
+
         creds = base64.b64encode('{}:{}'.format(
             Config['providers'][provider]['client_id'],
             Config['providers'][provider]['client_secret']).encode('utf-8'))
@@ -766,9 +791,9 @@ class Validator(object):
             'Content-Type': 'application/x-www-form-urlencoded'
         }
         body = {'token': token}
-        # print('endpoint: ' + endpoint)
-        # print('headers: ' + json.dumps(headers))
-        # print('body: ' + json.dumps(body))
+        # TODO: debug sensitive?
+        logging.debug("validate endpoint %s headers %s body %s", endpoint, json.dumps(headers), json.dumps(body))
+
         response = requests.post(endpoint, headers=headers, data=body)
         content = response.content.decode('utf-8')
         if response.status_code > 400:
@@ -777,9 +802,9 @@ class Validator(object):
         else:
             try:
                 body = json.loads(content)
-                logging.debug('loaded body from json %s', body)
+                logging.debug('validate repsonse body from json %s', body)
             except json.JSONDecodeError:
-                logging.error('could not decode response: %s', content)
+                logging.error('could not decode validate response: %s', content)
                 return {'active': False}
             if body.get('active', None):
                 r = {'active': True}
@@ -841,7 +866,9 @@ class Auth0Validator(Validator):
 
 class GoogleValidator(Validator):
     def validate(self, token, provider='google'):
-        endpoint = Config['providers']['google']['introspection_endpoint'] + '?access_token=' + token
+        ept = get_provider_config(provider, 'introspection_endpoint')
+        endpoint = '{}?access_token={}'.format(ept, token)
+
         response = requests.post(endpoint)
         content = response.content.decode('utf-8')
         if response.status_code > 400:
@@ -852,7 +879,7 @@ class GoogleValidator(Validator):
             try:
                 body = json.loads(content)
             except json.JSONDecodeError:
-                logging.warn('could not decode response: %s', content)
+                logging.warn('could not decode validate response: %s', content)
                 return {'active': False}
             if int(body['expires_in']) > 0:
                 r = {'active': True}
