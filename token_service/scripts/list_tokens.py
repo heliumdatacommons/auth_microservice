@@ -1,20 +1,37 @@
 """
-To be run using python manage.py runscripts list_tokens
+To be run using python manage.py runscripts list_tokens for uid
 
-cd .../lib/python2.7/site-packages/django/conf/project_template
-export DJANGO_SETTINGS_MODULE=token_service.settings
-python manage.py runscripts list_tokens
+If uid is empty string, list tokens for all users
+
+python -m auth_microservice.manage runscript list_tokens --script-arg <uid>
 """
 
 from token_service import models
+from django.utils.timezone import now
 
+def run(uid):
+    tos = models.Token.objects
+    if uid:
+        msg = 'uid: [{}]'.format(uid)
+        tokens = tos.filter(user__id=uid)
+    else:
+        msg = 'all uids'
+        tokens = tos.order_by('user__id')
+    print('listing tokens for {}'.format(msg))
 
-def run():
-    uid = ''
+    indent = " " * 2
+    for t in tokens:
+        txt = [t.access_token]
+        if not uid:
+            txt.append('{}uid {}'.format(indent, t.user_id))
 
-    print('listing tokens for uid: [{}]'.format(uid))
-    for t in models.Token.objects.filter(user__id=uid):
-        print(t.access_token)
-        for s in t.scopes.all():
-            print(s.name)
-        print()
+        txt.append('{}scopes: {}'.format(indent, ', '.join([s.name for s in t.scopes.all()])))
+
+        when = (t.expires - now()).seconds / 3600
+        if when <= 0:
+            msg = '{}expired {:.2f} hours ago ({})'
+        else:
+            msg = '{}expires in {:.2f} hours ({})'
+        txt.append(msg.format(indent, when, t.expires))
+
+        print("\n".join(txt + ['']))
