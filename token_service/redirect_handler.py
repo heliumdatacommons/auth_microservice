@@ -4,6 +4,7 @@ import json
 import jwt
 import logging
 import requests
+from calendar import timegm
 try:
     from urllib.parse import quote
 except ImportError:
@@ -244,14 +245,24 @@ class RedirectHandler(object):
         expires_in = body['expires_in']
         refresh_token = body['refresh_token']
         logging.debug('token_response: %s', body)
+
         # convert expires_in to timestamp
-        expire_time = now() + datetime.timedelta(seconds=expires_in)
+        n = now()
+        iat_local = timegm(n.timetuple())
+
+        expire_time = n + datetime.timedelta(seconds=expires_in)
+        exp_local = timegm(expire_time.timetuple())
         # expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
+        logging.debug("token expire_time %s (expires_in %s local iat %s local exp)",
+                      expire_time, expires_in, iat_local, exp_local)
 
         # expand the id_token to the encoded json object
         # TODO signature validation if signature provided
         id_token = jwt.decode(id_token, verify=False)
         logging.debug('id_token: %s', id_token)
+        if 'iat' in id_token and 'exp' in id_token:
+            # TODO: Why not use these?
+            logging.debug("from token iat %s exp %s", id_token['iat'], id_token['exp'])
 
         sub = id_token['sub']
         issuer = id_token['iss']
@@ -701,6 +712,8 @@ class GlobusRedirectHandler(RedirectHandler):
 
         # convert expires_in to timestamp
         expire_time = now() + datetime.timedelta(seconds=expires_in)
+        logging.debug("token expire_time %s (expires_in %s on epoch %s)",
+                      expire_time, expires_in, timegm(expire_time.timetuple()))
 
         token = models.Token(
             user=user,
