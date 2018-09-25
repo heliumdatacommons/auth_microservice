@@ -1,4 +1,5 @@
 import requests
+import logging
 import json
 import datetime
 import base64
@@ -374,9 +375,12 @@ class RedirectHandler(object):
             meta = json.loads(content)
             # cache this metadata
             if cache.count() == 0:  # create
+                logging.info('Creating new OIDC metadata cache entry for [{}]'.format(provider_tag))
                 models.OIDCMetadataCache.objects.create(provider=provider_tag, value=content)
             else:  # update
+                logging.info('Updating OIDC metadata cache for [{}]'.format(provider_tag))
                 cache[0].value = content
+                cache[0].retrieval_time = now()
                 cache[0].save()
         else:
             meta = json.loads(cache[0].value)
