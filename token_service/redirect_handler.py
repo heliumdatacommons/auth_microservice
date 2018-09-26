@@ -288,7 +288,7 @@ class RedirectHandler(object):
             if w.return_to:
                 ret = HttpResponseRedirect(build_redirect_url(w.return_to, token))
             else:
-                ret = HttpResponse('Successfully authenticated user')
+                ret = HttpResponse('Successfully authenticated user. Browser tab can be safely closed.')
 
             w.delete()
             return ret
