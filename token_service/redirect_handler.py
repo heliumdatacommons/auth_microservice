@@ -68,13 +68,15 @@ def get_or_update_OIDC_cache(provider_tag):
     return meta
 
 
-def get_provider_config(provider, key):
+def get_provider_config(provider, key, *args):
     """
     Retrieve key from provider config.
     If provider is openid, and key is not in the config,
         (try to) get the key from the metadata
     Raises a RuntimeError when provider standard is not supported.
-    Raises a KeyError on failure to get key
+
+    If a 3rd argument is provided, it is treated as a default value.
+    If not such default value is provided, raise a KeyError on failure to get key
     """
     config = Config['providers'][provider]
 
@@ -82,23 +84,31 @@ def get_provider_config(provider, key):
         raise RuntimeError('could not get {} from provider {} with unrecognized standard {}'.format(
             key, provider, config['standard']))
 
-    try:
+    msg = None
+    if key in config:
         data = config[key]
         logging.debug("Got %s for %s from provider %s config", data, key, provider)
         return data
-    except KeyError as error:
+    else:
         if is_openid(provider):
             meta = get_or_update_OIDC_cache(provider)
-            try:
+            if key in meta:
                 data = meta[key]
                 logging.debug("Got %s for %s from provider %s openid metadata", data, key, provider)
                 return data
-            except KeyError as error:
-                logging.warn("No %s config from openid provider", key)
-                raise error
+            else:
+                msg = "No %s config from openid provider" % key
         else:
-            logging.warn("No %s config from provider", key)
-            raise error
+            msg = "No %s config from provider" % key
+
+    if msg:
+        if len(args) > 0:
+            default = args[0]
+            logging.debug("%s, returning default %s", msg, default)
+            return default
+        else:
+            logging.warn(msg)
+            raise KeyError(msg)
 
 
 def get_handler(request=None, token=None):
@@ -333,20 +343,21 @@ class RedirectHandler(object):
         # check if user exists
         users = models.User.objects.filter(sub=sub)
         if len(users) == 0:
-            logging.info('creating new user with id: %s', sub)
-            # try to fill username with email
-            if 'preferred_username' in id_token:
-                user_name = id_token['preferred_username']
-            elif 'email' in id_token:
-                user_name = id_token['email']
-            else:
-                user_name = ''
-                logging.warn(('no email or username received for unrecognized user callback, ',
-                              'filling user_name with blank string'))
-            if 'name' in id_token:
-                name = id_token['name']
-            else:
-                name = ''
+            provider = w.provider
+            logging.info('creating new user with id: %s for provider: %s', sub, provider)
+
+            def _attr(keys, what):
+                for key in keys:
+                    if key in id_token:
+                        return id_token[key]
+                logging.warn("no attribute found in id_token for %s, tried %s; returning empty string",
+                             what, ', '.join(keys))
+                return ''
+
+            user_name = _attr(get_provider_config(provider, 'user_name_from_token', ['preferred_username', 'email']),
+                              'user_name')
+            name = _attr(get_provider_config(provider, 'name_from_token', ['name']), 'name')
+
             user = models.User(
                 sub=sub,
                 provider=w.provider,
