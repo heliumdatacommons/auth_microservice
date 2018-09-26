@@ -477,20 +477,22 @@ class RedirectHandler(object):
         client_id = provider_config['client_id']
         redirect_uri = Config['redirect_uri']
 
+        additional_params = '&' + provider_config.get('additional_params', '')
+
         # get auth endpoint
         if is_openid(provider_tag):
-            scope = ' '.join(scopes)
-            scope = quote(scope)
-            additional_params = 'scope=' + scope
+            scope = quote(' '.join(scopes))
+
+            additional_params += '&scope=' + scope
             additional_params += '&response_type=code'
             additional_params += '&access_type=offline'
-            additional_params += '&prompt=login%20consent'
-        elif is_oauth2(provider_tag):
-            additional_params = ''
-            if 'additional_params' in provider_config:
-                additional_params = provider_config['additional_params']
+            if provider_config.get('prompt', True):
+                additional_params += '&prompt=login%20consent'
 
-        url = '{}?nonce={}&state={}&redirect_uri={}&client_id={}&{}'.format(
+        if additional_params == '&':
+            additional_params = ''
+
+        url = '{}?nonce={}&state={}&redirect_uri={}&client_id={}{}'.format(
             authorization_endpoint,
             nonce,
             state,
