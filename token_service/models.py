@@ -29,10 +29,13 @@ class EncryptedTextField(models.TextField):
 
 
 class User(models.Model):
-    id = models.CharField(primary_key=True, max_length=256)
+    sub = models.CharField(max_length=256)
+    provider = models.CharField(max_length=256)
     user_name = models.CharField(unique=True, max_length=256)
     name = EncryptedTextField()
 
+    class Meta:
+        unique_together = (('sub', 'provider'),)
 
 class Token(models.Model):
     '''
@@ -86,7 +89,7 @@ class PendingCallback(models.Model):
     '''
     Used for sharing state between processes because python can't run real threads
     '''
-    uid = models.CharField(max_length=256)  # same type as User.id
+    uid = models.CharField(max_length=256)  # same type as User.sub
     state = EncryptedTextField()
     nonce = EncryptedTextField()
     scopes = models.ManyToManyField('Scope')
@@ -98,7 +101,7 @@ class PendingCallback(models.Model):
 
 # TODO remove, obsolete
 # class BlockingRequest(models.Model):
-#     uid = models.CharField(max_length=256) # same type as User.id
+#     uid = models.CharField(max_length=256) # same type as User.sub
 #     nonce = EncryptedTextField()
 #     scopes = models.ManyToManyField('Scope')
 #     provider = models.CharField(max_length=256)

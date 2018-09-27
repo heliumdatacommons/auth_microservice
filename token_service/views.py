@@ -5,14 +5,14 @@ from django.http import (
         HttpResponseBadRequest,
         JsonResponse,
         HttpResponseNotFound,
-        HttpResponseForbidden)
+        HttpResponseForbidden,
+        HttpResponseRedirect)
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.timezone import now
 from django.core.exceptions import (
         ObjectDoesNotExist)
 from django.shortcuts import get_object_or_404
-
 from . import models
 from . import redirect_handler
 from . import config
@@ -65,7 +65,7 @@ def _get_tokens(uid, scopes, provider, validate=False):
     # Django can do a filter using a subset operation for linked many-to-many, but not a filter using superset
     # we need to find tokens whose scopes are a superset of the scopes list being requested
     queryset = models.Token.objects.filter(
-        user__id=uid,
+        user__sub=uid,
         # scopes__in=models.Scope.objects.filter(name__in=scopes),
         provider=provider
     ).order_by('expires')  # sort by expiration ascending (~oldest first~)
@@ -127,15 +127,16 @@ def prune_invalid(tokens):
                 'val': active,
             }
             if active:
-                print('token [{}] belonging to uid [{}] was valid'.format(t.access_token, t.user.id))
+                print('token [{}] belonging to uid [{}] was valid'.format(t.access_token, t.user.sub))
                 valid.append(t)
             else:
                 # try refresh
                 try:
+                    handler = redirect_handler.get_handler(token=t)
                     t = handler._refresh_token(t)
                     valid.append(t)
                 except RuntimeError:
-                    print('token [{}] belonging to uid [{}] was revoked'.format(t.access_token, t.user.id))
+                    print('token [{}] belonging to uid [{}] was revoked'.format(t.access_token, t.user.sub))
                     t.delete()
         else:
             print('token found with no access_token or provider field: ' + str(t))
@@ -253,7 +254,7 @@ def url(request):
     if not provider:
         return HttpResponseBadRequest('missing provider')
 
-    handler = redirect_handler.RedirectHandler()
+    handler = redirect_handler.get_handler(request)
     if _valid_api_key(request) and return_to:
         url, nonce = handler.add(None, scopes, provider, return_to)
     else:
@@ -268,14 +269,14 @@ def subject_by_nonce(request):
     nonce = request.GET.get('nonce')
     validate = request.GET.get('validate', str(Config['real_time_validate_default'])).lower() == 'true'
 
-    handler = redirect_handler.RedirectHandler()
     tokens = _get_tokens_by_nonce(nonce, validate=validate)
     if len(tokens) == 0:
         return HttpResponseNotFound('no token which meets required criteria')
     token = tokens[0]
     if now() >= token.expires:
+        handler = redirect_handler.get_handler(token=token)
         token = handler._refresh_token(token)
-    return JsonResponse(status=200, data={'uid': token.user.id})
+    return JsonResponse(status=200, data={'uid': token.user.sub})
 
 
 @require_http_methods(['GET'])
@@ -289,7 +290,7 @@ def token(request):
     scope = request.GET.get('scope')
     provider = request.GET.get('provider')
     return_to = request.GET.get('return_to')
-    handler = redirect_handler.RedirectHandler()
+    handler = redirect_handler.get_handler()
     # validate
     # nonce takes precedence over (scope,provider,uid) combination
     if not nonce:
@@ -324,14 +325,18 @@ def token(request):
     #    token = prune_duplicate_tokens(tokens)
 
     if token.expires <= now():
-        token = handler._refresh_token(token)
+        try:
+            handler = redirect_handler.get_handler(token=token)
+            token = handler._refresh_token(token)
+        except RuntimeError as e:
+            return JsonResponse(status=410, data={'msg': 'Token has expired'})
 
     # if return_to:
     #     return HttpResponseRedirect(util.build_redirect_url(return_to, token))
     # else:
     return JsonResponse(status=200, data={
         'access_token': token.access_token,
-        'uid': token.user.id,
+        'uid': token.user.sub,
         'user_name': token.user.user_name
     })
 
@@ -348,7 +353,7 @@ def authcallback(request):
     # check state against active list
     # get provider corresponding to the state
     # exchange code for token response via that provider's token endpoint
-    handler = redirect_handler.RedirectHandler()
+    handler = redirect_handler.get_handler(request)
     red_resp = handler.accept(request)
 
     # handler.accept returns a Django response or throws an exception
@@ -388,7 +393,7 @@ def list_user_keys(request, uid, **kwargs):
     if kwargs.get('token', None):
         user = kwargs['token'].user
         print('got user from bearer token')
-        if str(user.id) != str(uid):
+        if str(user.sub) != str(uid):
             return HttpResponseForbidden('Not authorized to create keys for this uid')
     else:
         try:
@@ -399,7 +404,7 @@ def list_user_keys(request, uid, **kwargs):
 
     # get keys for this uid
     ret_list = []
-    keys = models.User_key.objects.filter(user__id=uid)
+    keys = models.User_key.objects.filter(user__sub=uid)
     if len(keys) == 0:
         return JsonResponse(status=404, data={'message': 'No keys found for this user'})
     # non-paginated
@@ -418,11 +423,11 @@ def new_user_key(request, uid, **kwargs):
     if kwargs.get('token', None):
         user = kwargs['token'].user
         print('got user from bearer token')
-        if str(user.id) != str(uid):
+        if str(user.sub) != str(uid):
             return HttpResponseForbidden('Not authorized to create keys for this uid')
     else:
         try:
-            user = models.User.objects.get(id=uid)
+            user = models.User.objects.get(sub=uid)
             print('got user from uid')
         except ObjectDoesNotExist:
             return HttpResponseBadRequest('User does not exist')
@@ -451,18 +456,18 @@ def action_user_key(request, uid, key_id, **kwargs):
     if kwargs.get('token', None):
         user = kwargs['token'].user
         print('got user from bearer token')
-        if str(user.id) != str(uid):
+        if str(user.sub) != str(uid):
             return HttpResponseForbidden('Not authorized to create keys for this uid')
     else:
         try:
-            user = models.User.objects.get(id=uid)
+            user = models.User.objects.get(sub=uid)
             print('got user from uid')
         except ObjectDoesNotExist:
             return HttpResponseBadRequest('User does not exist')
 
     # do operation
     if request.method == 'GET':
-        key = get_object_or_404(models.User_key, user__id=uid, id=key_id)
+        key = get_object_or_404(models.User_key, user__sub=uid, id=key_id)
         return JsonResponse(status=200, data={
             "id": key.id,
             "creation_time": key.creation_time,
@@ -470,7 +475,7 @@ def action_user_key(request, uid, key_id, **kwargs):
             "label": key.label})
     elif request.method == 'DELETE':
         try:
-            key = models.User_key.objects.get(user__id=uid, id=key_id)
+            key = models.User_key.objects.get(user__sub=uid, id=key_id)
             key.delete()
         except ObjectDoesNotExist:
             print('key already did not exist')
@@ -493,11 +498,11 @@ def verify_user_key(request, **kwargs):
     user1 = user2 = None
     try:
         if uid_param:
-            user1 = models.User.objects.get(id=uid_param)
+            user1 = models.User.objects.get(sub=uid_param)
         if user_param:
             user2 = models.User.objects.get(user_name=user_param)
         if user1 and user2:
-            if user1.id != user2.id:  # disallow mismatched uid and user_name
+            if user1.sub != user2.sub:  # disallow mismatched uid and user_name
                 return invalid_user
         user = user1 if user1 else user2
     except ObjectDoesNotExist as e:
@@ -513,7 +518,16 @@ def verify_user_key(request, **kwargs):
             return JsonResponse(status=200, data={'valid': True})
         else:  # don't check user
             key = models.User_key.objects.get(key_hash=key_hash)
-            return JsonResponse(status=200, data={'valid': True, 'uid': key.user.id, 'user_name': key.user.user_name})
+            return JsonResponse(status=200, data={'valid': True, 'uid': key.user.sub, 'user_name': key.user.user_name})
     except ObjectDoesNotExist as e:
         return JsonResponse(status=401, data={'valid': False})
+
+def index(request):
+    handler = redirect_handler.Auth0RedirectHandler()
+    scopes = ['openid', 'profile', 'email']
+    provider = Config['root_default_provider']
+    return_to = Config['root_return_to']
+    url, nonce = handler.add(None, scopes, provider, return_to)
+    print(url)
+    return HttpResponseRedirect(url)
 

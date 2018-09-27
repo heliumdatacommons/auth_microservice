@@ -7,7 +7,7 @@ def create_fake_user():
     Return a User object.
     """
     user = User()
-    user.id = 1
+    user.sub = 1
     user.user_name = 'john'
     user.name = 'doe'
 

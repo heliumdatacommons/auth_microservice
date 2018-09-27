@@ -88,13 +88,13 @@ def build_redirect_url(base_url, token):
     # access_token, uid, user_name=None, first_name=None, last_name=None):
     user = token.user
     url = '{}/?access_token={}'.format(base_url, token.access_token)
-    url += '&uid=' + quote(user.id)
+    url += '&uid=' + quote(user.sub)
     url += '&user_name=' + quote(user.user_name)
     url += '&name=' + quote(user.name)
 
     # body = {
     #        'access_token': token.access_token,
-    #        'uid': user.id,
+    #        'uid': user.sub,
     #        'user_name': user.user_name,
     #        'name': user.name
     # }

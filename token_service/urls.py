@@ -22,6 +22,8 @@ except ImportError:
 from . import views
 
 urlpatterns = [
+    url('^$', views.index),
+
     # admin (requires admin key)
     url('^admin/key/?$', views.create_key, name='create_key'),
     # public
