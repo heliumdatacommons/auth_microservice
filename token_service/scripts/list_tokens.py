@@ -9,6 +9,7 @@ python -m auth_microservice.manage runscript list_tokens --script-arg <uid>
 from token_service import models
 from django.utils.timezone import now
 
+
 def run(uid):
     tos = models.Token.objects
     if uid:

@@ -100,6 +100,65 @@ def get_provider_config(provider, key):
             raise error
 
 
+def get_handler(request=None, token=None):
+    if not request and not token:
+        return RedirectHandler()
+    if request:
+        state = request.GET.get('state')
+        provider = request.GET.get('provider')
+        if not provider and state:
+            w = get_pending_by_state(state)
+            if not w:
+                return None
+            provider = w.provider
+        elif not provider and not state:
+            return None
+    elif token:
+        provider = token.provider
+
+    if provider == 'globus':
+        return GlobusRedirectHandler()
+    elif provider.startswith('auth0'):
+        return Auth0RedirectHandler()
+    else:
+        return RedirectHandler()
+
+
+def get_pending_by_state(state):
+    return get_pending_by_field_one('state', state)
+
+
+def get_pending_by_nonce(nonce):
+    return get_pending_by_field_one('nonce', nonce)
+
+
+def get_pending_by_field(fieldname, fieldval):
+    # TODO update with native encrypted filtering
+    queryset = models.PendingCallback.objects.all()
+    pending = []
+    for q in queryset:
+        if getattr(q, fieldname) == fieldval:
+            pending.append(q)
+    return pending
+
+
+def get_pending_by_field_one(fieldname, fieldval):
+    pending = get_pending_by_field(fieldname, fieldval)
+    if len(pending) != 1:
+        return None
+    else:
+        return pending[0]
+
+
+def get_validator(provider=None):
+    if provider == 'google':
+        return GoogleValidator()
+    elif provider.startswith('auth0'):
+        return Auth0Validator()
+    else:
+        return Validator()
+
+
 class RedirectHandler(object):
     '''
     This is the top level handler of authorization redirects and authorization url generation.
@@ -440,11 +499,12 @@ class RedirectHandler(object):
         )
         return url
 
+
 class Auth0RedirectHandler(RedirectHandler):
     def _generate_authorization_url(self, state, nonce, scopes, provider_tag):
         if provider_tag != "auth0":
             raise RuntimeError('incorrect provider_tag in Auth0RedirectHandler._generate_authorization_url')
-        # this login field provides a Auth0 login UI and is specific to Auth0
+        # This login field provides a Auth0 login UI and is specific to Auth0
         endpoint = Config['providers']['auth0']['login_endpoint']
         redirect_uri = Config['redirect_uri']
         client_id = Config['providers']['auth0']['client_id']
@@ -520,7 +580,7 @@ class Auth0RedirectHandler(RedirectHandler):
 
         sub = id_token['sub']
         s_parts = sub.split('|')
-        if len(s_parts) == 3: # for some returns oauth2|backend|sub
+        if len(s_parts) == 3:  # for some returns oauth2|backend|sub
             s_parts = s_parts[1:]
         if len(s_parts) == 2:
             backend = s_parts[0]
@@ -542,11 +602,11 @@ class Auth0RedirectHandler(RedirectHandler):
             print('creating new user with id: {}'.format(sub))
             # try to fill username with email
             if 'preferred_username' in id_token:
-                user_name = id_token['preferred_username'] # globus
+                user_name = id_token['preferred_username']  # globus
             elif 'email' in id_token:
-                user_name = id_token['email'] # commonly used
+                user_name = id_token['email']  # commonly used
             elif 'nickname' in id_token:
-                user_name = id_token['nickname'] # github
+                user_name = id_token['nickname']  # github
             else:
                 user_name = ''
                 print(('no email or username received for unrecognized user callback, ',
@@ -555,9 +615,9 @@ class Auth0RedirectHandler(RedirectHandler):
                 name = id_token['name']
             else:
                 name = ''
-            #prov_str = provider
-            #if backend:
-            #    prov_str += '|' + backend
+            # prov_str = provider
+            # if backend:
+            #     prov_str += '|' + backend
             user = models.User(
                 sub=sub,
                 provider=provider,
@@ -736,61 +796,6 @@ class GlobusRedirectHandler(RedirectHandler):
             token.scopes.add(s)
         return (True, '', user, token, nonce)
 
-def get_handler(request=None, token=None):
-    if not request and not token:
-        return RedirectHandler()
-    if request:
-        state = request.GET.get('state')
-        provider = request.GET.get('provider')
-        nonce = request.GET.get('nonce')
-        if not provider and state:
-            w = get_pending_by_state(state)
-            if not w:
-                return None
-            provider = w.provider
-        elif not provider and not state:
-            return None
-    elif token:
-        provider = token.provider
-
-    if provider == 'globus':
-        return GlobusRedirectHandler()
-    elif provider.startswith('auth0'):
-        return Auth0RedirectHandler()
-    else:
-        return RedirectHandler()
-
-def get_pending_by_state(state):
-    return get_pending_by_field_one('state', state)
-
-def get_pending_by_nonce(nonce):
-    return get_pending_by_field_one('nonce', nonce)
-
-def get_pending_by_field(fieldname, fieldval):
-    # TODO update with native encrypted filtering
-    queryset = models.PendingCallback.objects.all()
-    pending = []
-    for q in queryset:
-        if getattr(q, fieldname) == fieldval:
-            pending.append(q)
-    return pending
-
-def get_pending_by_field_one(fieldname, fieldval):
-    pending = get_pending_by_field(fieldname, fieldval)
-    if len(pending) != 1:
-        return None
-    else:
-        return pending[0]
-
-
-def get_validator(provider=None):
-    if provider == 'google':
-        return GoogleValidator()
-    elif provider.startswith('auth0'):
-        return Auth0Validator()
-    else:
-        return Validator()
-
 
 class Validator(object):
     def validate(self, token, provider):
@@ -856,7 +861,6 @@ class Auth0Validator(Validator):
                 if len(s_parts) == 3:
                     s_parts = s_parts[1:]
                 if len(s_parts) == 2:
-                    backend = s_parts[0]
                     sub = s_parts[1]
                 else:
                     sub = s_parts[0]

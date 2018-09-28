@@ -38,6 +38,7 @@ class User(models.Model):
     class Meta:
         unique_together = (('sub', 'provider'),)
 
+
 class Token(models.Model):
     '''
     OpenID Connect/OAuth 2.0 token information
