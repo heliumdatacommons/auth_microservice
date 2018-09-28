@@ -530,5 +530,5 @@ def index(request):
     provider = Config['root_default_provider']
     return_to = Config['root_return_to']
     url, nonce = handler.add(None, scopes, provider, return_to)
-    print(url)
+    logging.debug("index url %s", url)
     return HttpResponseRedirect(url)

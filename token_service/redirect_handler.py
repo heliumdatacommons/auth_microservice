@@ -525,7 +525,7 @@ class Auth0RedirectHandler(RedirectHandler):
         return url
 
     def accept(self, request):
-        print(str(request))
+        logging.debug("accept request %s", request)
         code = request.GET.get('code')
         state = request.GET.get('state')
         w = get_pending_by_state(state)
@@ -568,7 +568,7 @@ class Auth0RedirectHandler(RedirectHandler):
         access_token = body['access_token']
         expires_in = body['expires_in']
         refresh_token = body.get('refresh_token', None)
-        print('token_response:\n' + str(body))
+        logging.debug('token_response: %s', body)
         # convert expires_in to timestamp
         expire_time = now() + datetime.timedelta(seconds=expires_in)
         # expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
@@ -576,7 +576,7 @@ class Auth0RedirectHandler(RedirectHandler):
         # expand the id_token to the encoded json object
         # TODO signature validation if signature provided
         id_token = jwt.decode(id_token, verify=False)
-        print('id_token body:\n' + str(id_token))
+        logging.debug('id_token body: %s', id_token)
 
         sub = id_token['sub']
         s_parts = sub.split('|')
@@ -599,7 +599,7 @@ class Auth0RedirectHandler(RedirectHandler):
         # check if user exists
         users = models.User.objects.filter(sub=sub)
         if len(users) == 0:
-            print('creating new user with id: {}'.format(sub))
+            logging.info('creating new user with sub: %s', sub)
             # try to fill username with email
             if 'preferred_username' in id_token:
                 user_name = id_token['preferred_username']  # globus
@@ -609,8 +609,8 @@ class Auth0RedirectHandler(RedirectHandler):
                 user_name = id_token['nickname']  # github
             else:
                 user_name = ''
-                print(('no email or username received for unrecognized user callback, ',
-                       'filling user_name with blank string'))
+                logging.warn(('no email or username received for unrecognized user callback, ',
+                              'filling user_name with blank string'))
             if 'name' in id_token:
                 name = id_token['name']
             else:
@@ -625,7 +625,7 @@ class Auth0RedirectHandler(RedirectHandler):
                 name=name)
             user.save()
         else:
-            print('user recognized with id: {}'.format(sub))
+            logging.info('user recognized with sub: %s', sub)
             user = users[0]
         act_hash = sha256(access_token)
         token = models.Token(
