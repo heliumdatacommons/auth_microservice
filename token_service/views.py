@@ -67,7 +67,7 @@ def _get_tokens(uid, scopes, provider, validate=False):
     Note that enabling validate will provide real-time token revocation checks with the provider, but this could
     have a serious performance impact.
     '''
-    logging.debug('querying for tokens: uid %s, scopes %s, provider %s', uid, scopes, provider)
+    logging.debug('querying for tokens: uid %s, scopes %s, provider %s validate %s', uid, scopes, provider, validate)
     # Django can do a filter using a subset operation for linked many-to-many, but not a filter using superset
     # we need to find tokens whose scopes are a superset of the scopes list being requested
     queryset = models.Token.objects.filter(
@@ -83,6 +83,8 @@ def _get_tokens(uid, scopes, provider, validate=False):
 
     if validate:
         tokens = prune_invalid(tokens)
+
+    logging.debug("query result %s tokens", len(tokens))
     return tokens
 
 
