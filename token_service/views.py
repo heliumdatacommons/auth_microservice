@@ -223,8 +223,7 @@ def _valid_api_key(request):
     if m:
         received_key = m.group(1)
         received_hash = util.sha256(received_key)
-        util.logging_sensitive('_valid_api_key received key: ' + str(received_key))
-        util.logging_sensitive('_valid_api_key received hash: ' + str(received_hash))
+        util.logging_sensitive('_valid_api_key received key: %s hash: %s', received_key, received_hash)
         # keys are unencrypted hashes
         keys = models.API_key.objects.filter(key_hash=received_hash)
         # for debugging purposes only, checking for multiple entries with same key hash
