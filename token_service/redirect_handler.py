@@ -248,7 +248,6 @@ class RedirectHandler(object):
         '''
         logging.debug('adding callback waiter with uid %s, scopes %s, provider %s, return_to %s',
                       uid, scopes, provider_tag, return_to)
-        scopes = sorted(scopes)
         if uid is None:
             uid = ''
         if return_to is None:
