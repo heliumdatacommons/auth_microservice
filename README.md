@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.com/heliumdatacommons/auth_microservice.svg?branch=master)](https://travis-ci.com/heliumdatacommons/auth_microservice)
+
 # auth_microservice
 
 Microservice which abstracts out OAuth2/OpenID exchanges and token management from applications
