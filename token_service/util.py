@@ -9,7 +9,7 @@ try:
     from urllib.parse import quote
 except ImportError:
     from urllib import quote
-from token_service.config import debug_sensitive
+from token_service import config
 
 try:
     FileNotFoundError
@@ -17,14 +17,27 @@ except NameError:
     # FileNotFoundError doesn't exist in py27, but it is really an IOError anyway
     FileNotFoundError = IOError
 
+try:
+    basestring
+except NameError:
+    # basestring doesn't exist in py3
+    # (or better yet: str in py27 doesn't include unicode)
+    basestring = str
+
+
+def is_str(s):
+    return isinstance(s, basestring)
+
 
 def logging_sensitive(*args, **kwargs):
     """
     Special debug logging, that might log encrypted/decrypted data.
     Only when debug_sensitive is enabled in token_service.config
     """
-    if debug_sensitive:
+    if config.debug_sensitive:
         logging.debug(*args, **kwargs)
+    else:
+        logging.debug("sensitive false: non-templated message %s", args[0])
 
 
 def generate_nonce(length):
@@ -32,7 +45,7 @@ def generate_nonce(length):
     Returns a random hex string with provided length. URL safe.
     String returned contains (1/2 * length) bytes of urandom entropy.
     '''
-    nonce = os.urandom(math.ceil(length))
+    nonce = os.urandom(int(math.ceil(length)))
 
     return binascii.b2a_hex(nonce)[:length].decode('utf-8')
 
@@ -42,7 +55,7 @@ def generate_base64(length):
     Returns a random base64 string with provided length. Not URL safe.
     String returned contains (3/4 * length) bytes of urandom entropy.
     '''
-    nonce = os.urandom(math.ceil(int(float(length)*3/4)))
+    nonce = os.urandom(int(math.ceil(int(float(length)*3/4))))
     return base64.b64encode(nonce).decode('utf-8')
 
 
@@ -66,7 +79,8 @@ def list_subset(A, B):
 
 
 def sha256(s):
-    if not isinstance(s, str):
+    if not is_str(s):
+        logging.debug("not a string instance: %s", s)
         return None
     hasher = hashlib.sha256()
     hasher.update(s.encode('utf-8'))
@@ -74,7 +88,7 @@ def sha256(s):
 
 
 def is_sock(path):
-    if not path or not isinstance(path, str):
+    if not path or not is_str(path):
         return False
     try:
         file_stat = os.stat(path)

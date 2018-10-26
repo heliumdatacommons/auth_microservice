@@ -36,7 +36,7 @@ urlpatterns = [
     url('^validate_token/?$', views.validate_token, name='validate_token'),
 
     # api keys
-    url('^apikey/verify/?$', views.verify_user_key), # must be before uid urls to avoid shadowing
+    url('^apikey/verify/?$', views.verify_user_key),  # must be before uid urls to avoid shadowing
     url('^apikey/(?P<uid>[^/]+)/?$', views.list_user_keys),
     url('^apikey/(?P<uid>[^/]+)/new/?$', views.new_user_key),
     url('^apikey/(?P<uid>[^/]+)/(?P<key_id>[^/]+)/?$', views.action_user_key),

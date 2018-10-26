@@ -97,6 +97,28 @@ If a conflicting path is already in use on 443, the django app can be placed on 
     }
 ```
 
+# Configuration
+
+## config.json
+
+### Providers
+
+* `additional_params`: string (default empty) with (extra) parameters for the authorization url.
+In case of OpenID Connect, most params (like `scope`, `response_type`, and `access_type`) are
+already generated. For OAuth2, there are no default parameters.
+
+* `additional_scopes`: list of additional scopes that will be requested via the authorization URL.
+
+* `user_name_from_token`: list of token attributes to use as `user_name` (tried in order,
+first existing attribute wins) (default to `preferred_username` and `email`)
+
+* `name_from_token`: list of token attributes to use as `name` (tried in order,
+first existing attribute wins) (default to `name`)
+
+#### OpenID Connect
+
+* prompt: boolean (default True): adds `prompt` parameter for `login` and `consent` to the authorization url
+
 # Development
 
 ## Unittests

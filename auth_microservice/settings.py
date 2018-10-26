@@ -14,6 +14,11 @@ https://docs.djangoproject.com/en/2.0/ref/settings/
 #
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
+
+# Uncomment to debug sensitive data
+# from token_service import config
+# config.debug_sensitive = True
+
 #
 # Force enable logging, to be able to log during base_settings
 LOGGING_CONFIG = None
@@ -79,6 +84,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_extensions',
 ]
 
 MIDDLEWARE = [
@@ -92,7 +98,7 @@ MIDDLEWARE = [
 ]
 MIDDLEWARE_CLASSES = MIDDLEWARE  # django < 20 compatibility
 
-ROOT_URLCONF = 'microservice.urls'
+ROOT_URLCONF = 'auth_microservice.urls'
 
 TEMPLATES = [
     {
@@ -110,7 +116,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'microservice.wsgi.application'
+WSGI_APPLICATION = 'auth_microservice.wsgi.application'
 
 
 

@@ -1,9 +1,11 @@
-import requests
-import logging
-import json
-import datetime
 import base64
+import datetime
+import json
 import jwt
+import logging
+import requests
+from calendar import timegm
+
 try:
     from urllib.parse import quote
 except ImportError:
@@ -14,14 +16,202 @@ from django.http import (
         HttpResponseRedirect,
         JsonResponse,
         HttpResponseServerError)
-from django.core.exceptions import ObjectDoesNotExist
 from django.utils.timezone import now
-from .util import generate_nonce, build_redirect_url, sha256
+from .util import generate_nonce, build_redirect_url, sha256, is_str
 from .config import Config
 # Moved from lazy import.
 #    TODO: assumed that lazy import was needed for crypt initialisation
 #          but there's a runtime exception when using non-initialised crypt
 from . import models
+
+STANDARD_OPENID_CONNECT = 'OpenID Connect'
+STANDARD_OAUTH2 = 'OAuth 2.0'
+SUPPORTED_STANDARDS = [STANDARD_OPENID_CONNECT, STANDARD_OAUTH2]
+PROVIDER_GLOBUS = 'globus'
+
+
+def is_supported(provider):
+    return Config['providers'][provider]['standard'] in SUPPORTED_STANDARDS
+
+
+def is_openid(provider):
+    return Config['providers'][provider]['standard'] == STANDARD_OPENID_CONNECT
+
+
+def is_oauth2(provider):
+    return Config['providers'][provider]['standard'] == STANDARD_OAUTH2
+
+
+def get_or_update_OIDC_cache(provider_tag):
+    provider_config = Config['providers'][provider_tag]
+    meta_url = provider_config['metadata_url']
+    cache = models.OIDCMetadataCache.objects.filter(provider=provider_tag)
+    if cache.count() == 0 or (cache[0].retrieval_time + datetime.timedelta(hours=24)) < now():
+        # not cached, or cached entry is more than 1 day old
+        response = requests.get(meta_url)
+        if response.status_code != 200:
+            raise RuntimeError('could not retrieve openid metadata from {}, returned error: {}\n{}'.format(
+                meta_url, response.status_code, response.content.decode('utf-8')))
+        content = response.content.decode('utf-8')
+        meta = json.loads(content)
+        # cache this metadata
+        if cache.count() == 0:  # create
+            logging.info('Creating new OIDC metadata cache entry for [{}]'.format(provider_tag))
+            models.OIDCMetadataCache.objects.create(provider=provider_tag, value=content)
+        else:  # update
+            logging.info('Updating OIDC metadata cache for [{}]'.format(provider_tag))
+            cache[0].value = content
+            cache[0].retrieval_time = now()
+            cache[0].save()
+    else:
+        meta = json.loads(cache[0].value)
+    return meta
+
+
+def get_provider_config(provider, key, *args):
+    """
+    Retrieve key from provider config.
+    If provider is openid, and key is not in the config,
+        (try to) get the key from the metadata
+    Raises a RuntimeError when provider standard is not supported.
+
+    If a 3rd argument is provided, it is treated as a default value.
+    If not such default value is provided, raise a KeyError on failure to get key
+    """
+    config = Config['providers'][provider]
+
+    if not is_supported(provider):
+        raise RuntimeError('could not get {} from provider {} with unrecognized standard {}'.format(
+            key, provider, config['standard']))
+
+    msg = None
+    if key in config:
+        data = config[key]
+        logging.debug("Got %s for %s from provider %s config", data, key, provider)
+        return data
+    else:
+        if is_openid(provider):
+            meta = get_or_update_OIDC_cache(provider)
+            if key in meta:
+                data = meta[key]
+                logging.debug("Got %s for %s from provider %s openid metadata", data, key, provider)
+                return data
+            else:
+                msg = "No %s config from openid provider" % key
+        else:
+            msg = "No %s config from provider" % key
+
+    if msg:
+        if len(args) > 0:
+            default = args[0]
+            logging.debug("%s, returning default %s", msg, default)
+            return default
+        else:
+            logging.warn(msg)
+            raise KeyError(msg)
+
+
+def get_handler(request=None, token=None):
+    if not request and not token:
+        return RedirectHandler()
+    if request:
+        state = request.GET.get('state')
+        provider = request.GET.get('provider')
+        if not provider and state:
+            w = get_pending_by_state(state)
+            if not w:
+                return None
+            provider = w.provider
+        elif not provider and not state:
+            return None
+    elif token:
+        provider = token.provider
+
+    if provider == 'globus':
+        return GlobusRedirectHandler()
+    elif provider.startswith('auth0'):
+        return Auth0RedirectHandler()
+    else:
+        return RedirectHandler()
+
+
+def get_pending_by_state(state):
+    return get_pending_by_field_one('state', state)
+
+
+def get_pending_by_nonce(nonce):
+    return get_pending_by_field_one('nonce', nonce)
+
+
+def get_pending_by_field(fieldname, fieldval):
+    # TODO update with native encrypted filtering
+    queryset = models.PendingCallback.objects.all()
+    pending = []
+    for q in queryset:
+        if getattr(q, fieldname) == fieldval:
+            pending.append(q)
+    return pending
+
+
+def get_pending_by_field_one(fieldname, fieldval):
+    pending = get_pending_by_field(fieldname, fieldval)
+    if len(pending) != 1:
+        return None
+    else:
+        return pending[0]
+
+
+def get_validator(provider=None):
+    if provider == 'google':
+        return GoogleValidator()
+    elif provider.startswith('auth0'):
+        return Auth0Validator()
+    else:
+        return Validator()
+
+
+def get_user(provider, sub, user_name=None, name=None, warn=True):
+    """
+    Get user with sub and provider.
+
+    When user_name is provided, and the user does not exist yet;
+    creates one.
+
+    Raises an error when not unique (but is forced by schema)
+    """
+    users = models.User.objects.filter(sub=sub, provider=provider)
+    nusers = len(users)
+
+    msg = "user for provider {} and sub {}".format(provider, sub)
+    if nusers == 0:
+        if user_name is not None:
+            logging.info("No %s found, creating one with user_name %s and name %s",
+                         msg, user_name, name)
+            kwargs = {
+                'sub': sub,
+                'provider': provider,
+                'user_name': user_name,
+            }
+            if name is not None:
+                kwargs['name'] = name
+
+            user = models.User(**kwargs)
+            user.save()
+        else:
+            if warn:
+                report = logging.warn
+            else:
+                report = logging.debug
+            report("No %s found, not user_name/name provided", msg)
+            user = None
+    elif nusers > 1:
+        logging.exception("Found more than one user for provider %s and sub %s" % (provider, sub))
+        raise
+    else:
+        logging.info("Existing user for provider %s and sub %s", provider, sub)
+        user = users[0]
+
+    return user
 
 
 class RedirectHandler(object):
@@ -41,6 +231,9 @@ class RedirectHandler(object):
     #   Attempt to autodetect cacert location based on os, otherwise pull Mozilla's https://curl.haxx.se/ca/cacert.pem
     #   also look at default ssl verification in requests package, and in pyoidc package, could rely on them
 
+    IDTOKEN_USER_NAME = ['preferred_username', 'email']
+    IDTOKEN_NAME = ['name']
+
     def __init__(self):
         # timeout in seconds for authorization callbacks to be received
         # default is 300 (5 minutes)
@@ -53,9 +246,13 @@ class RedirectHandler(object):
                     via an OpenID provider, this must include 'openid'.
         provider_tag: matched against provider dictionary keys in the configuration loaded at startup
         '''
-        print('adding callback waiter with uid {}, scopes {}, provider {}, return_to {}'.format(
-                uid, scopes, provider_tag, return_to))
-        scopes = sorted(scopes)
+        logging.debug('adding callback waiter with uid %s, scopes %s, provider %s, return_to %s',
+                      uid, scopes, provider_tag, return_to)
+        additional_scopes = get_provider_config(provider_tag, 'additional_scopes', [])
+        if additional_scopes:
+            logging.debug("Add additional scopes %s for provider %s to current scopes %s",
+                          additional_scopes, provider_tag, scopes)
+            scopes.extend(additional_scopes)
         if uid is None:
             uid = ''
         if return_to is None:
@@ -118,19 +315,17 @@ class RedirectHandler(object):
         if not w:
             return HttpResponseBadRequest('callback request from login is malformed, or authorization session expired')
         else:
-            print('accepted request maps to pending callback object: ' + str(vars(w)))
+            logging.debug('accepted request maps to pending callback object: %s', vars(w))
             if now() > w.creation_time + datetime.timedelta(seconds=Config['url_expiration_timeout']):
+                logging.warn('authorization url has expired object: %s', vars(w))
                 return HttpResponseBadRequest('This authorization url has expired, please retry')
             provider = w.provider
-            if self.is_openid(provider):
-                meta = models.OIDCMetadataCache.objects.get(provider=provider).value
-                meta = json.loads(meta)
-                token_endpoint = meta['token_endpoint']
-            else:  # require non-openid providers to specify the token endpoint
-                token_endpoint = Config['providers'][provider]['token_endpoint']
+            token_endpoint = get_provider_config(provider, 'token_endpoint')
+
             client_id = Config['providers'][provider]['client_id']
             client_secret = Config['providers'][provider]['client_secret']
             redirect_uri = Config['redirect_uri']
+
             token_response = self._token_request(
                     token_endpoint,
                     client_id,
@@ -140,7 +335,7 @@ class RedirectHandler(object):
             if token_response.status_code not in [200, 302]:
                 return HttpResponseServerError('could not acquire token from provider' + str(vars(token_response)))
 
-            if provider == 'globus':
+            if provider == PROVIDER_GLOBUS:
                 handler = GlobusRedirectHandler()
             elif provider == 'auth0':
                 handler = Auth0RedirectHandler()
@@ -154,110 +349,122 @@ class RedirectHandler(object):
             if w.return_to:
                 ret = HttpResponseRedirect(build_redirect_url(w.return_to, token))
             else:
-                ret = HttpResponse('Successfully authenticated user')
+                ret = HttpResponse('Successfully authenticated user. Browser tab can be safely closed.')
 
             w.delete()
             return ret
 
-    def _handle_token_response(self, w, response):
-        '''
-        Called upon successful exhance of an authorization code for an access token.
-        Takes w a token_service.models.PendingCallback object and a requests.models.Response object
-        Returns (bool,message) or raises exception.
-        '''
-        body = json.loads(response.content)
-        id_token = body['id_token']
-        access_token = body['access_token']
-        expires_in = body['expires_in']
-        refresh_token = body['refresh_token']
-        print('token_response:\n' + str(body))
+    def get_user_name_name(self, provider, id_token):
+        def _attr(keys, what):
+            for key in keys:
+                if key in id_token:
+                    return id_token[key]
+            logging.warn("no attribute found in id_token for %s, tried %s; returning empty string",
+                         what, ', '.join(keys))
+            return ''
+
+        user_name = _attr(get_provider_config(provider, 'user_name_from_token', self.IDTOKEN_USER_NAME),
+                          'user_name')
+        name = _attr(get_provider_config(provider, 'name_from_token', self.IDTOKEN_NAME), 'name')
+
+        return user_name, name
+
+    def _handle_token_body(self, user, provider, issuer, scopes, nonce, token_dict, act_hash=True):
+        """
+        scopes are the scope names (not Scope model instances)
+        """
+        logging.debug('handling token %s for user %s provider %s issuer %s scopes %s',
+                      token_dict, user, provider, issuer, scopes)
+        access_token = token_dict['access_token']
+        expires_in = token_dict['expires_in']
+        refresh_token = token_dict['refresh_token']
+
         # convert expires_in to timestamp
-        expire_time = now() + datetime.timedelta(seconds=expires_in)
-        # expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
+        n = now()
+        iat_local = timegm(n.timetuple())
 
-        # expand the id_token to the encoded json object
-        # TODO signature validation if signature provided
-        id_token = jwt.decode(id_token, verify=False)
-        print('id_token body:\n' + str(id_token))
+        expire_time = n + datetime.timedelta(seconds=expires_in)
+        exp_local = timegm(expire_time.timetuple())
+        logging.debug("token expire_time %s (expires_in %s local iat %s local exp %s)",
+                      expire_time, expires_in, iat_local, exp_local)
 
-        sub = id_token['sub']
-        issuer = id_token['iss']
-        nonce = id_token['nonce']
-        if nonce != w.nonce:
-            return (False, 'login request malformed or expired', None, None, None)
+        kwargs = {
+            'user': user,
+            'access_token': access_token,
+            'refresh_token': refresh_token,  # TODO what if no refresh_token in response
+            'expires': expire_time,
+            'provider': provider,
+            'issuer': issuer,
+            'enabled': True,
+        }
 
-        # check if user exists
-        users = models.User.objects.filter(sub=sub)
-        if len(users) == 0:
-            print('creating new user with id: {}'.format(sub))
-            # try to fill username with email
-            if 'preferred_username' in id_token:
-                user_name = id_token['preferred_username']
-            elif 'email' in id_token:
-                user_name = id_token['email']
-            else:
-                user_name = ''
-                print(('no email or username received for unrecognized user callback, ',
-                       'filling user_name with blank string'))
-            if 'name' in id_token:
-                name = id_token['name']
-            else:
-                name = ''
-            user = models.User(
-                sub=sub,
-                provider=w.provider,
-                user_name=user_name,
-                name=name)
-            user.save()
-        else:
-            print('user recognized with id: {}'.format(sub))
-            user = users[0]
-        act_hash = sha256(access_token)
-        token = models.Token(
-            user=user,
-            access_token=access_token,
-            refresh_token=refresh_token,  # TODO what if no refresh_token in response
-            expires=expire_time,
-            provider=w.provider,
-            issuer=issuer,
-            enabled=True,
-            access_token_hash=act_hash
-        )
+        if act_hash:
+            kwargs['access_token_hash'] = sha256(access_token)
+
+        token = models.Token(**kwargs)
         token.save()
+        # TODO: sensitive?
+        logging.debug('saved token: %s', vars(token))
 
         n, created = models.Nonce.objects.get_or_create(value=nonce)
         token.nonce.add(n)
 
-        # link scopes, create if not exist:
-        for scope in w.scopes.all():
-            s, created = models.Scope.objects.get_or_create(name=scope.name)
+        for scope in scopes:
+            s, created = models.Scope.objects.get_or_create(name=scope)
             token.scopes.add(s)
-
         return (True, '', user, token, nonce)
 
+    def _provider_sub_from_id_token(self, provider, id_token):
+        return provider, id_token['sub']
+
+    def _handle_token_response(self, w, response):
+        '''
+        Called upon successful exchange of an authorization code for an access token.
+        Takes w a token_service.models.PendingCallback object and a requests.models.Response object
+        Returns (bool, message, user_instance, token, nonce) or raises exception.
+        '''
+        body = json.loads(response.content)
+        id_token = body['id_token']
+
+        # expand the id_token to the encoded json object
+        # TODO signature validation if signature provided
+        id_token = jwt.decode(id_token, verify=False)
+        logging.debug('id_token: %s', id_token)
+        if 'iat' in id_token and 'exp' in id_token:
+            # TODO: Why not use these?
+            logging.debug("from token iat %s exp %s", id_token['iat'], id_token['exp'])
+
+        provider, sub = self._provider_sub_from_id_token(w.provider, id_token)
+        issuer = id_token['iss']
+
+        nonce = id_token['nonce']
+        if nonce != w.nonce:
+            msg = 'login request malformed or expired'
+            logging.warn("%s nonce form id_token %s from w %s", msg, nonce, w.nonce)
+            return (False, msg, None, None, None)
+
+        user_name, name = self.get_user_name_name(provider, id_token)
+        user = get_user(provider, sub, user_name, name)
+
+        scope_names = [s.name for s in w.scopes.all()]
+        return self._handle_token_body(user, w.provider, issuer, scope_names, nonce, body)
+
     def validate_token(self, provider, access_token, scopes=None):
-        print('validate_token, provider: [{}], access_token: [{}]'.format(provider, access_token))
+        logging.debug('validate_token: provider: %s, access_token: %s', provider, access_token)
         headers = {
             'Authorization': 'Bearer ' + str(access_token)
         }
-        validate_type = None
-        # if validation_url:
-        #     # use custom url if provided
-        #     endpoint = validation_url
-        if Config['providers'][provider].get('introspection_endpoint'):
-            # attempt to use configured introspection endpoint
-            endpoint = Config['providers'][provider]['introspection_endpoint']
-            validate_type = 'introspection'
-        else:
-            # fall back to userinfo endpoint
-            if self.is_openid(provider):
-                meta = json.loads(models.OIDCMetadataCache.objects.get(provider=provider).value)
-                endpoint = meta['userinfo_endpoint']
-            else:  # non oidc providers must specify a userinfo_endpoint on the config file
-                endpoint = Config['providers'][provider]['userinfo_endpoint']
 
-        if validate_type == 'introspection':
-            endpoint = endpoint % access_token
+        try:
+            ept = get_provider_config(provider, 'introspection_endpoint')
+            # TODO: why would the endpoint url support templating?
+            endpoint = ept % access_token
+            logging.debug("Got introspection endpoint %s (from config %s)", endpoint, ept)
+        except KeyError:
+            # non oidc providers must specify a userinfo_endpoint on the config file
+            endpoint = get_provider_config(provider, 'userinfo_endpoint')
+            logging.debug("No introspection endpoint, using userinfo endpoint %s", endpoint)
+
         response = requests.get(endpoint, headers=headers)
         content = response.content.decode('utf-8')
         if response.status_code != 200:
@@ -290,19 +497,14 @@ class RedirectHandler(object):
         return response
 
     def _refresh_token(self, token_model):
-        provider_config = Config['providers'][token_model.provider]
-        if self.is_openid(token_model.provider):
-            meta = self._get_or_update_OIDC_cache(token_model.provider)
-            token_endpoint = meta['token_endpoint']
-        elif self.is_oauth2(token_model.provider):
-            token_endpoint = provider_config['token_endpoint']
-        else:
-            raise RuntimeError('could not refresh unrecognized provider standard')
+        provider = token_model.provider
+        token_endpoint = get_provider_config(provider, 'token_endpoint')
 
         data = {
             'grant_type': 'refresh_token',
             'refresh_token': token_model.refresh_token
         }
+        provider_config = Config['providers'][provider]
         client_id = provider_config['client_id']
         client_secret = provider_config['client_secret']
         authorization = base64.b64encode((client_id + ':' + client_secret).encode('utf-8'))
@@ -327,12 +529,6 @@ class RedirectHandler(object):
             token_model.save()
             return token_model
 
-    def is_openid(self, provider):
-        return Config['providers'][provider]['standard'] == 'OpenID Connect'
-
-    def is_oauth2(self, provider):
-        return Config['providers'][provider]['standard'] == 'OAuth 2.0'
-
     def is_nonce_unique(self, nonce):
         # TODO update with https://github.com/heliumdatacommons/auth_microservice/issues/4 when resolved
         queryset = models.Nonce.objects.all()
@@ -341,60 +537,32 @@ class RedirectHandler(object):
                 return False
         return True
 
-    def _get_or_update_OIDC_cache(self, provider_tag):
-        provider_config = Config['providers'][provider_tag]
-        meta_url = provider_config['metadata_url']
-        cache = models.OIDCMetadataCache.objects.filter(provider=provider_tag)
-        if cache.count() == 0 or (cache[0].retrieval_time + datetime.timedelta(hours=24)) < now():
-            # not cached, or cached entry is more than 1 day old
-            response = requests.get(meta_url)
-            if response.status_code != 200:
-                raise RuntimeError('could not retrieve openid metadata, returned error: '
-                                   + str(response.status_code) + '\n' + response.content.decode('utf-8'))
-            content = response.content.decode('utf-8')
-            meta = json.loads(content)
-            # cache this metadata
-            if cache.count() == 0:  # create
-                logging.info('Creating new OIDC metadata cache entry for [{}]'.format(provider_tag))
-                models.OIDCMetadataCache.objects.create(provider=provider_tag, value=content)
-            else:  # update
-                logging.info('Updating OIDC metadata cache for [{}]'.format(provider_tag))
-                cache[0].value = content
-                cache[0].retrieval_time = now()
-                cache[0].save()
-        else:
-            meta = json.loads(cache[0].value)
-        return meta
-
     def _generate_authorization_url(self, state, nonce, scopes, provider_tag):
         '''
         Create a proper authorization url based on provided parameters
         '''
+        authorization_endpoint = get_provider_config(provider_tag, 'authorization_endpoint')
+
         provider_config = Config['providers'][provider_tag]
         client_id = provider_config['client_id']
         redirect_uri = Config['redirect_uri']
 
-        # get auth endpoint
-        if self.is_openid(provider_tag):
-            # openid allowed for endpoint and other value specification within metadata file
-            meta = self._get_or_update_OIDC_cache(provider_tag)
+        additional_params = '&' + provider_config.get('additional_params', '')
 
-            authorization_endpoint = meta['authorization_endpoint']
-            scope = ' '.join(scopes)
-            scope = quote(scope)
-            additional_params = 'scope=' + scope
+        # get auth endpoint
+        if is_openid(provider_tag):
+            scope = quote(' '.join(scopes))
+
+            additional_params += '&scope=' + scope
             additional_params += '&response_type=code'
             additional_params += '&access_type=offline'
-            additional_params += '&prompt=login%20consent'
-        elif self.is_oauth2(provider_tag):
-            authorization_endpoint = provider_config['authorization_endpoint']
-            additional_params = ''
-            if 'additional_params' in provider_config:
-                additional_params = provider_config['additional_params']
-        else:
-            raise RuntimeError('unknown provider standard: ' + provider_config['standard'])
+            if provider_config.get('prompt', True):
+                additional_params += '&prompt=login%20consent'
 
-        url = '{}?nonce={}&state={}&redirect_uri={}&client_id={}&{}'.format(
+        if additional_params == '&':
+            additional_params = ''
+
+        url = '{}?nonce={}&state={}&redirect_uri={}&client_id={}{}'.format(
             authorization_endpoint,
             nonce,
             state,
@@ -404,11 +572,14 @@ class RedirectHandler(object):
         )
         return url
 
+
 class Auth0RedirectHandler(RedirectHandler):
+    IDTOKEN_USER_NAME = ['preferred_username', 'email', 'nickname']
+
     def _generate_authorization_url(self, state, nonce, scopes, provider_tag):
         if provider_tag != "auth0":
             raise RuntimeError('incorrect provider_tag in Auth0RedirectHandler._generate_authorization_url')
-        # this login field provides a Auth0 login UI and is specific to Auth0
+        # This login field provides a Auth0 login UI and is specific to Auth0
         endpoint = Config['providers']['auth0']['login_endpoint']
         redirect_uri = Config['redirect_uri']
         client_id = Config['providers']['auth0']['client_id']
@@ -429,7 +600,7 @@ class Auth0RedirectHandler(RedirectHandler):
         return url
 
     def accept(self, request):
-        print(str(request))
+        logging.debug("accept request %s", request)
         code = request.GET.get('code')
         state = request.GET.get('state')
         w = get_pending_by_state(state)
@@ -460,99 +631,19 @@ class Auth0RedirectHandler(RedirectHandler):
         w.delete()
         return ret
 
-    def _handle_token_response(self, w, response):
-        '''
-        Auth0 _handle_token_response
-        Called upon successful exhance of an authorization code for an access token.
-        Takes w a token_service.models.PendingCallback object and a requests.models.Response object
-        Returns (bool,message) or raises exception.
-        '''
-        body = json.loads(response.content)
-        id_token = body['id_token']
-        access_token = body['access_token']
-        expires_in = body['expires_in']
-        refresh_token = body.get('refresh_token', None)
-        print('token_response:\n' + str(body))
-        # convert expires_in to timestamp
-        expire_time = now() + datetime.timedelta(seconds=expires_in)
-        # expire_time = expire_time.replace(tzinfo=datetime.timezone.utc)
+    def _provider_sub_from_id_token(self, provider, id_token):
+        # for some returns [[oauth2|]backend|]sub
+        #   split it and reverse it
+        s_parts = id_token['sub'].split('|')[::-1]
 
-        # expand the id_token to the encoded json object
-        # TODO signature validation if signature provided
-        id_token = jwt.decode(id_token, verify=False)
-        print('id_token body:\n' + str(id_token))
+        sub = s_parts[0]
 
-        sub = id_token['sub']
-        s_parts = sub.split('|')
-        if len(s_parts) == 3: # for some returns oauth2|backend|sub
-            s_parts = s_parts[1:]
-        if len(s_parts) == 2:
-            backend = s_parts[0]
-            provider = w.provider + '|' + backend
-            sub = s_parts[1]
-        else:
-            backend = ''
-            provider = w.provider
-            sub = s_parts[0]
+        p_parts = [provider]
+        if len(s_parts) > 1:
+            p_parts.append(s_parts[1])
+        provider = '|'.join(p_parts)
 
-        issuer = id_token['iss']
-        nonce = id_token['nonce']
-        if nonce != w.nonce:
-            return (False, 'login request malformed or expired', None, None, None)
-
-        # check if user exists
-        users = models.User.objects.filter(sub=sub)
-        if len(users) == 0:
-            print('creating new user with id: {}'.format(sub))
-            # try to fill username with email
-            if 'preferred_username' in id_token:
-                user_name = id_token['preferred_username'] # globus
-            elif 'email' in id_token:
-                user_name = id_token['email'] # commonly used
-            elif 'nickname' in id_token:
-                user_name = id_token['nickname'] # github
-            else:
-                user_name = ''
-                print(('no email or username received for unrecognized user callback, ',
-                       'filling user_name with blank string'))
-            if 'name' in id_token:
-                name = id_token['name']
-            else:
-                name = ''
-            #prov_str = provider
-            #if backend:
-            #    prov_str += '|' + backend
-            user = models.User(
-                sub=sub,
-                provider=provider,
-                user_name=user_name,
-                name=name)
-            user.save()
-        else:
-            print('user recognized with id: {}'.format(sub))
-            user = users[0]
-        act_hash = sha256(access_token)
-        token = models.Token(
-            user=user,
-            access_token=access_token,
-            refresh_token=refresh_token,  # TODO what if no refresh_token in response
-            expires=expire_time,
-            provider=provider,
-            issuer=issuer,
-            enabled=True,
-            access_token_hash=act_hash
-        )
-        token.save()
-        logging.debug('saved token: ' + str(token))
-        n, created = models.Nonce.objects.get_or_create(value=nonce)
-        token.nonce.add(n)
-
-        # link scopes, create if not exist:
-        for scope in w.scopes.all():
-            s, created = models.Scope.objects.get_or_create(name=scope.name)
-            token.scopes.add(s)
-
-        return (True, '', user, token, nonce)
+        return provider, sub
 
     def _refresh_token(self, token_model):
         provider_config = Config['providers']['auth0']
@@ -604,33 +695,28 @@ class GlobusRedirectHandler(RedirectHandler):
         level token in the response, but also stores the 'other_tokens'
         '''
         body = json.loads(response.content)
+        issuer = body['resource_server']
+        scopes = []
+        if is_str(body['scope']):
+            scopes.append(body['scope'])
+
         tokens = []
         user = token = nonce = None
+
+        def _htb(_user, _nonce, _dict):
+            # TODO: act_hash False?
+            return self._handle_token_body(_user, PROVIDER_GLOBUS, issuer, scopes, _nonce, _dict, act_hash=False)
+
         # check to see if top level token is for openid
         if 'openid' in body['scope'] and 'id_token' in body:
-            # w_copy = deepcopy(w)
-            # w_copy.scopes =
-            #    [s for s in models.Scope.objects.all() if s.name in body['scope'].split()]
             success, msg, user, token, nonce = super()._handle_token_response(w, response)
             if not success:
                 return (success, msg, user, token, nonce)
             tokens.append(token)
         else:
-            # check if user exists
-            if not user:  # no openid token was in this response
-                users = models.User.objects.filter(sub=w.uid)
-                if len(users) > 0:
-                    user = users[0]
-                else:
-                    # only thing we have here is the subject id, so use sub id as the user_name too
-                    user_name = w.uid
-                    print('unrecognized user for Globus token response without an id_token field,'
-                          + 'filling user_name with the same as the id')
-                    user = models.User.objects.create(
-                        sub=w.uid,
-                        provider='globus',
-                        user_name=user_name)
-                    user.save()
+            # TODO: globus users are always created without a name attribute?
+            user = get_user(PROVIDER_GLOBUS, w.uid, w.uid)
+
             # For globus, on a token callback it also puts the state value into the root level
             # json object. This is actually pretty nice and should be part of the OAuth2.0 spec.
             # However substituting the state value for the nonce (in OAuth2 callbacks, not OIDC)
@@ -641,127 +727,33 @@ class GlobusRedirectHandler(RedirectHandler):
             # This also impacts other OAuth2.0 apis which do not return nonce.
             # TODO It might be useful to switch over to linking tokens to the 'state' value
             # instead of 'nonce' since 'state' is used by both openid and oauth2.
-            if not nonce:
-                nonce = w.nonce
+            nonce = w.nonce
 
-            success, msg, user, token, nonce = self._handle_token_body(user, w, nonce, body)
+            success, msg, user, token, nonce = _htb(user, nonce, body)
             if not success:
                 return (success, msg, user, token, nonce)
             tokens.append(token)
 
         # check if user exists
+        # TODO: is this really necessary/possible?
+        # TODO: explanation is wrong, this is the else block above?
         if not user:  # no openid token was in this response
-            users = models.User.objects.filter(sub=w.uid)
-            if len(users) > 0:
-                user = users[0]
-            else:
-                # only thing we have here is the subject id, so use sub id as the user_name too
-                user_name = w.uid
-                print('unrecognized user for Globus token response without an id_token field,'
-                      + 'filling user_name with the same as the id')
-                user = models.User.objects.create(
-                    sub=w.uid,
-                    provider='globus',
-                    user_name=user_name)
-                user.save()
+            # TODO: globus users are always created without a name attribute?
+            user = get_user(PROVIDER_GLOBUS, w.uid, w.uid)
 
-        if 'other_tokens' in body and len(body['other_tokens']) > 0:
-            for other_token in body['other_tokens']:
-                success, msg, user, token, nonce = self._handle_token_body(user, w, nonce, other_token)
-                tokens.append(token)
+        for other_token in body.get('other_tokens', []):
+            success, msg, user, token, nonce = _htb(user, nonce, other_token)
+            # TODO: why handle more than one, only first element of tokens is passed?
+            # TODO: not success check?
+            tokens.append(token)
 
         return (True, '', user, tokens[0], nonce)
-
-    def _handle_token_body(self, user, w, nonce, token_dict):
-        print('handling globus token body:\n' + str(token_dict))
-        access_token = token_dict['access_token']
-        expires_in = token_dict['expires_in']
-        refresh_token = token_dict['refresh_token']
-        provider = w.provider
-
-        # convert expires_in to timestamp
-        expire_time = now() + datetime.timedelta(seconds=expires_in)
-
-        token = models.Token(
-            user=user,
-            access_token=access_token,
-            refresh_token=refresh_token,  # TODO what if no refresh_token in response
-            expires=expire_time,
-            provider=provider,
-            issuer=token_dict['resource_server'],
-            enabled=True,
-        )
-        token.save()
-
-        n, created = models.Nonce.objects.get_or_create(value=nonce)
-        token.nonce.add(n)
-
-        # link scopes, create if not exist:
-        #   for scope in w.scopes.all():
-        if isinstance(token_dict['scope'], str):
-            s, created = models.Scope.objects.get_or_create(name=token_dict['scope'])
-            token.scopes.add(s)
-        return (True, '', user, token, nonce)
-
-def get_handler(request=None, token=None):
-    if not request and not token:
-        return RedirectHandler()
-    if request:
-        state = request.GET.get('state')
-        provider = request.GET.get('provider')
-        nonce = request.GET.get('nonce')
-        if not provider and state:
-            w = get_pending_by_state(state)
-            if not w:
-                return None
-            provider = w.provider
-        elif not provider and not state:
-            return None
-    elif token:
-        provider = token.provider
-
-    if provider == 'globus':
-        return GlobusRedirectHandler()
-    elif provider.startswith('auth0'):
-        return Auth0RedirectHandler()
-    else:
-        return RedirectHandler()
-
-def get_pending_by_state(state):
-    return get_pending_by_field_one('state', state)
-
-def get_pending_by_nonce(nonce):
-    return get_pending_by_field_one('nonce', nonce)
-
-def get_pending_by_field(fieldname, fieldval):
-    # TODO update with native encrypted filtering
-    queryset = models.PendingCallback.objects.all()
-    pending = []
-    for q in queryset:
-        if getattr(q, fieldname) == fieldval:
-            pending.append(q)
-    return pending
-
-def get_pending_by_field_one(fieldname, fieldval):
-    pending = get_pending_by_field(fieldname, fieldval)
-    if len(pending) != 1:
-        return None
-    else:
-        return pending[0]
-
-
-def get_validator(provider=None):
-    if provider == 'google':
-        return GoogleValidator()
-    elif provider.startswith('auth0'):
-        return Auth0Validator()
-    else:
-        return Validator()
 
 
 class Validator(object):
     def validate(self, token, provider):
-        endpoint = Config['providers'][provider]['introspection_endpoint']
+        endpoint = get_provider_config(provider, 'introspection_endpoint')
+
         creds = base64.b64encode('{}:{}'.format(
             Config['providers'][provider]['client_id'],
             Config['providers'][provider]['client_secret']).encode('utf-8'))
@@ -770,20 +762,20 @@ class Validator(object):
             'Content-Type': 'application/x-www-form-urlencoded'
         }
         body = {'token': token}
-        # print('endpoint: ' + endpoint)
-        # print('headers: ' + json.dumps(headers))
-        # print('body: ' + json.dumps(body))
+        # TODO: debug sensitive?
+        logging.debug("validate endpoint %s headers %s body %s", endpoint, json.dumps(headers), json.dumps(body))
+
         response = requests.post(endpoint, headers=headers, data=body)
         content = response.content.decode('utf-8')
         if response.status_code > 400:
-            print('validate failed on {}. returned [{}] {}'.format(endpoint, response.status_code, content))
+            logging.error('validate failed on %s. returned [%s] %s', endpoint, response.status_code, content)
             return {'active': False}
         else:
             try:
                 body = json.loads(content)
-                print(body)
+                logging.debug('validate repsonse body from json %s', body)
             except json.JSONDecodeError:
-                print('could not decode response: {}'.format(content))
+                logging.error('could not decode validate response: %s', content)
                 return {'active': False}
             if body.get('active', None):
                 r = {'active': True}
@@ -793,11 +785,9 @@ class Validator(object):
                     r['username'] = body['username']
                 elif 'sub' in r:
                     # see if we recognize the subject id
-                    try:
-                        user = models.User.objects.get(sub=r['sub'])
+                    user = get_user(provider, r['sub'], warn=False)
+                    if user:
                         r['username'] = user.user_name
-                    except ObjectDoesNotExist:
-                        pass
                 return r
         return {'active': False}
 
@@ -822,7 +812,6 @@ class Auth0Validator(Validator):
                 if len(s_parts) == 3:
                     s_parts = s_parts[1:]
                 if len(s_parts) == 2:
-                    backend = s_parts[0]
                     sub = s_parts[1]
                 else:
                     sub = s_parts[0]
@@ -835,28 +824,28 @@ class Auth0Validator(Validator):
                 r['username'] = body['email']
             else:
                 # see if we recognize the sub
-                try:
-                    user = models.User.objects.get(sub=r['sub'])
+                user = get_user(provider, r['sub'], warn=False)
+                if user:
                     r['username'] = user.user_name
-                except ObjectDoesNotExist:
-                    pass
             return r
 
 
 class GoogleValidator(Validator):
     def validate(self, token, provider='google'):
-        endpoint = Config['providers']['google']['introspection_endpoint'] + '?access_token=' + token
+        ept = get_provider_config(provider, 'introspection_endpoint')
+        endpoint = '{}?access_token={}'.format(ept, token)
+
         response = requests.post(endpoint)
         content = response.content.decode('utf-8')
         if response.status_code > 400:
-            print('validate failed on {}. returned [{}] {}'.format(
-                endpoint, response.status_code, content))
+            logging.warn('validate failed on %s. returned [%s] %s',
+                         endpoint, response.status_code, content)
             return {'active': False}
         else:
             try:
                 body = json.loads(content)
             except json.JSONDecodeError:
-                print('could not decode response: {}'.format(content))
+                logging.warn('could not decode validate response: %s', content)
                 return {'active': False}
             if int(body['expires_in']) > 0:
                 r = {'active': True}
