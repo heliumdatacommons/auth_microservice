@@ -28,7 +28,9 @@ STANDARD_OPENID_CONNECT = 'OpenID Connect'
 STANDARD_OAUTH2 = 'OAuth 2.0'
 SUPPORTED_STANDARDS = [STANDARD_OPENID_CONNECT, STANDARD_OAUTH2]
 PROVIDER_GLOBUS = 'globus'
-
+PROVIDER_GOOGLE = 'google'
+PROVIDER_AUTH0 = 'auth0'
+DEFAULT_PROVIDER = PROVIDER_AUTH0
 
 def is_supported(provider):
     return Config['providers'][provider]['standard'] in SUPPORTED_STANDARDS
@@ -127,9 +129,9 @@ def get_handler(request=None, token=None):
     elif token:
         provider = token.provider
 
-    if provider == 'globus':
+    if provider == PROVIDER_GLOBUS:
         return GlobusRedirectHandler()
-    elif provider.startswith('auth0'):
+    elif provider.startswith(PROVIDER_AUTH0):
         return Auth0RedirectHandler()
     else:
         return RedirectHandler()
@@ -161,13 +163,18 @@ def get_pending_by_field_one(fieldname, fieldval):
         return pending[0]
 
 
-def get_validator(provider=None):
-    if provider == 'google':
-        return GoogleValidator()
-    elif provider.startswith('auth0'):
+def get_validator(provider=DEFAULT_PROVIDER):
+    inv = RuntimeError('invalid provider {}'.format(str(provider)))
+    if not provider:
         return Auth0Validator()
+    if provider == PROVIDER_GOOGLE:
+        return GoogleValidator()
+    elif provider.startswith(PROVIDER_AUTH0):
+        return Auth0Validator()
+    elif provider == PROVIDER_GLOBUS:
+        return GlobusValidator()
     else:
-        return Validator()
+        raise inv
 
 
 def get_user(provider, sub, user_name=None, name=None, warn=True):
@@ -337,7 +344,7 @@ class RedirectHandler(object):
 
             if provider == PROVIDER_GLOBUS:
                 handler = GlobusRedirectHandler()
-            elif provider == 'auth0':
+            elif provider == PROVIDER_AUTH0:
                 handler = Auth0RedirectHandler()
             else:
                 handler = self
@@ -577,12 +584,12 @@ class Auth0RedirectHandler(RedirectHandler):
     IDTOKEN_USER_NAME = ['preferred_username', 'email', 'nickname']
 
     def _generate_authorization_url(self, state, nonce, scopes, provider_tag):
-        if provider_tag != "auth0":
+        if provider_tag != PROVIDER_AUTH0:
             raise RuntimeError('incorrect provider_tag in Auth0RedirectHandler._generate_authorization_url')
         # This login field provides a Auth0 login UI and is specific to Auth0
-        endpoint = Config['providers']['auth0']['login_endpoint']
+        endpoint = Config['providers'][PROVIDER_AUTH0]['login_endpoint']
         redirect_uri = Config['redirect_uri']
-        client_id = Config['providers']['auth0']['client_id']
+        client_id = Config['providers'][PROVIDER_AUTH0]['client_id']
 
         scope = ' '.join(scopes)
         scope = quote(scope)
@@ -608,8 +615,8 @@ class Auth0RedirectHandler(RedirectHandler):
             return HttpResponseBadRequest('callback request from login is malformed, or authorization session expired')
         if now() > w.creation_time + datetime.timedelta(seconds=Config['url_expiration_timeout']):
                 return HttpResponseBadRequest('This authorization url has expired, please retry')
-        client_id = Config['providers']['auth0']['client_id']
-        client_secret = Config['providers']['auth0']['client_secret']
+        client_id = Config['providers'][PROVIDER_AUTH0]['client_id']
+        client_secret = Config['providers'][PROVIDER_AUTH0]['client_secret']
         redirect_uri = Config['redirect_uri']
         token_endpoint = 'https://heliumdatacommons.auth0.com/oauth/token'
         token_response = self._token_request(
@@ -646,7 +653,7 @@ class Auth0RedirectHandler(RedirectHandler):
         return provider, sub
 
     def _refresh_token(self, token_model):
-        provider_config = Config['providers']['auth0']
+        provider_config = Config['providers'][PROVIDER_AUTH0]
         if not token_model.refresh_token:
             # don't rely on exception for this
             raise RuntimeError('No refresh token available')
@@ -749,9 +756,11 @@ class GlobusRedirectHandler(RedirectHandler):
 
         return (True, '', user, tokens[0], nonce)
 
-
+"""
+This is a reference implementation for OIDC IPDs which conform exactly to spec
+"""
 class Validator(object):
-    def validate(self, token, provider):
+    def validate(self, token, provider=DEFAULT_PROVIDER):
         endpoint = get_provider_config(provider, 'introspection_endpoint')
 
         creds = base64.b64encode('{}:{}'.format(
@@ -791,15 +800,16 @@ class Validator(object):
                 return r
         return {'active': False}
 
+class GlobusValidator(Validator):
+    def validate(self, token, provider=PROVIDER_GLOBUS):
+        return Validator().validate(token, provider)
 
 class Auth0Validator(Validator):
-    def validate(self, token, provider='auth0'):
-        endpoint = Config['providers']['auth0']['userinfo_endpoint']
+    def validate(self, token, provider=PROVIDER_AUTH0):
+        endpoint = Config['providers'][PROVIDER_AUTH0]['userinfo_endpoint']
         endpoint += '?access_token={}'.format(token)
         response = requests.get(endpoint)
-        if response.status_code >= 300:
-            return {'active': False}
-        else:
+        if response.status_code < 300:
             try:
                 body = json.loads(response.content.decode('utf-8'))
                 logging.debug('userinfo response: ' + str(body))
@@ -824,14 +834,26 @@ class Auth0Validator(Validator):
                 r['username'] = body['email']
             else:
                 # see if we recognize the sub
-                user = get_user(provider, r['sub'], warn=False)
-                if user:
-                    r['username'] = user.user_name
+                try:
+                    user = get_user(provider, r['sub'], warn=False)
+                    if user:
+                        r['username'] = user.user_name
+                except ObjectDoesNotExist:
+                    pass
             return r
+        else:
+            # token could not fetch userprofile from auth0
+            # check whether the access token is for a backend instead
+            for validator in [GlobusValidator, GoogleValidator]:
+                logging.debug('trying to validate against {} with token {}'.format(validator, token))
+                vresp = validator().validate(token)
+                if vresp['active'] == True:
+                    return vresp
+            return {'active': False}
 
 
 class GoogleValidator(Validator):
-    def validate(self, token, provider='google'):
+    def validate(self, token, provider=PROVIDER_GOOGLE):
         ept = get_provider_config(provider, 'introspection_endpoint')
         endpoint = '{}?access_token={}'.format(ept, token)
 
@@ -847,7 +869,7 @@ class GoogleValidator(Validator):
             except json.JSONDecodeError:
                 logging.warn('could not decode validate response: %s', content)
                 return {'active': False}
-            if int(body['expires_in']) > 0:
+            if int(body.get('expires_in', '0')) > 0:
                 r = {'active': True}
                 if body.get('user_id', None):
                     r['sub'] = body['user_id']

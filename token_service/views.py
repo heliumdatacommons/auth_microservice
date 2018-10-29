@@ -1,6 +1,7 @@
 import logging
 import re
 import time
+from six.moves.urllib.parse import urlparse
 from django.http import (
         HttpResponseBadRequest,
         JsonResponse,
@@ -127,7 +128,7 @@ def prune_invalid(tokens):
             else:
                 validator = redirect_handler.get_validator(t.provider)
                 validators[t.provider] = validator
-            validation_resp = validator.validate(t.access_token, t.provider)
+            validation_resp = validator.validate(t.access_token)
             active = validation_resp.get('active', False)
             # insert to worker cache
             access_token_validation_cache[(t.access_token, t.provider)] = {
@@ -243,6 +244,32 @@ def _valid_api_key(request):
     return False
 
 
+def return_to_whitelisted(url):
+    if not Config.get('allow_return_regex'):
+        return False
+    else:
+        allowed = False
+        allowed_list = Config.get('allow_return_regex')
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            logging.warn('return_to url must be a valid http/https url, received: [{}]'.format(url))
+            return False
+        domain = parsed.netloc.split(':')[0]
+        for allowed_reg in allowed_list: 
+            if not allowed_reg.startswith('^'):
+                allowed_reg = '^' + allowed_reg
+            if not allowed_reg.endswith('$'):
+                allowed_reg = allowed_reg + '$'
+            logging.debug('checking return_to domain [{}] against {}'.format(
+                    domain, allowed_reg))
+            match = re.search(allowed_reg, domain)
+            if match is not None:
+                logging.debug('return_to [{}] matched [{}]'.format(url, allowed_reg))
+                allowed = True
+            else:
+                logging.debug('no match: ' + str(match))
+        return allowed
+
 @require_http_methods(['GET'])
 def url(request):
     '''
@@ -266,9 +293,12 @@ def url(request):
     if _valid_api_key(request) and return_to:
         url, nonce = handler.add(None, scopes, provider, return_to)
     else:
-        if return_to:
+        if return_to and return_to_whitelisted(return_to):
+            logging.debug('no apikey but return_to matched whitelist pattern')
+            url, nonce = handler.add(None, scopes, provider, return_to)
+        else:
             logging.debug('invalid api key, ignoring return_to param')
-        url, nonce = handler.add(None, scopes, provider)
+            url, nonce = handler.add(None, scopes, provider)
     return JsonResponse(status=200, data={'authorization_url': url, 'nonce': nonce})
 
 
@@ -339,9 +369,6 @@ def token(request):
         except RuntimeError as e:
             return JsonResponse(status=410, data={'msg': 'Token has expired'})
 
-    # if return_to:
-    #     return _http_response(HttpResponseRedirect, util.build_redirect_url(return_to, token))
-    # else:
     return JsonResponse(status=200, data={
         'access_token': token.access_token,
         'uid': token.user.sub,
@@ -368,15 +395,12 @@ def authcallback(request):
     return red_resp
 
 
-@require_valid_api_key
 def validate_token(request):
-    if not _valid_api_key(request):
-        return _http_response(HttpResponseForbidden, 'must provide valid api key')
     provider = request.GET.get('provider')
     access_token = request.GET.get('access_token')
     token_validator = redirect_handler.get_validator(provider)
 
-    validate_response = token_validator.validate(access_token, provider)
+    validate_response = token_validator.validate(access_token)
     logging.debug('validate_response: %s', validate_response)
     return JsonResponse(status=200, data=validate_response)
 

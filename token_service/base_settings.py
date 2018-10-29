@@ -127,7 +127,7 @@ def get_admin_key(keylen=ADMIN_KEY_LEN):
         if len(d) != raw_len:
             logging.warn('admin key file %s must contain a %s byte hexidecimal string',
                          TOKEN_SERVICE_ADMIN_KEY, raw_len)
-        admin_key = d.encode('utf-8')  # this remains as hex
+        admin_key = d  # this remains as hex
         tsc.admin_key = admin_key
         logging_sensitive("read admin_key: %s", admin_key)
         return admin_key
