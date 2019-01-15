@@ -60,12 +60,13 @@ def get_or_update_OIDC_cache(provider_tag):
         # cache this metadata
         if cache.count() == 0:  # create
             logging.info('Creating new OIDC metadata cache entry for [{}]'.format(provider_tag))
-            models.OIDCMetadataCache.objects.create(provider=provider_tag, value=content)
+            models.OIDCMetadataCache.objects.create(provider=provider_tag, value=content, retrieval_time=now())
         else:  # update
             logging.info('Updating OIDC metadata cache for [{}]'.format(provider_tag))
-            cache[0].value = content
-            cache[0].retrieval_time = now()
-            cache[0].save()
+            c = cache[0]
+            c.value = content
+            c.retrieval_time = now()
+            c.save()
     else:
         meta = json.loads(cache[0].value)
     return meta
