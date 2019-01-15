@@ -34,6 +34,7 @@ class User(models.Model):
     provider = models.CharField(max_length=256)
     user_name = models.CharField(unique=True, max_length=256)
     name = EncryptedTextField()
+    email = EncryptedTextField(default='')
 
     class Meta:
         unique_together = (('sub', 'provider'),)

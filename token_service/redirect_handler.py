@@ -5,7 +5,7 @@ import jwt
 import logging
 import requests
 from calendar import timegm
-
+logger = logging.getLogger(__name__)
 try:
     from urllib.parse import quote
 except ImportError:
@@ -23,6 +23,7 @@ from .config import Config
 #    TODO: assumed that lazy import was needed for crypt initialisation
 #          but there's a runtime exception when using non-initialised crypt
 from . import models
+from .util import logging_sensitive
 
 STANDARD_OPENID_CONNECT = 'OpenID Connect'
 STANDARD_OAUTH2 = 'OAuth 2.0'
@@ -80,6 +81,17 @@ def get_provider_config(provider, key, *args):
     If a 3rd argument is provided, it is treated as a default value.
     If not such default value is provided, raise a KeyError on failure to get key
     """
+    if '|' in provider and not provider.startswith('|') and not provider.endswith('|'):
+        terms = provider.split('|')
+        if len(terms) <= 1:
+            raise RuntimeError('Found provider separator in provider name {}, but could not split'.format(
+                provider))
+        else:
+            if len(terms) > 2:
+                logger.warn('Received provider with more than two terms: {}'.format(provider))
+            provider = terms[0]
+            backend = terms[1]
+            logger.debug('Split provider into provider: {}, backend: {}'.format(provider, backend))
     config = Config['providers'][provider]
 
     if not is_supported(provider):
@@ -240,6 +252,7 @@ class RedirectHandler(object):
 
     IDTOKEN_USER_NAME = ['preferred_username', 'email']
     IDTOKEN_NAME = ['name']
+    IDTOKEN_EMAIL = ['email']
 
     def __init__(self):
         # timeout in seconds for authorization callbacks to be received
@@ -384,7 +397,7 @@ class RedirectHandler(object):
                       token_dict, user, provider, issuer, scopes)
         access_token = token_dict['access_token']
         expires_in = token_dict['expires_in']
-        refresh_token = token_dict['refresh_token']
+        refresh_token = token_dict.get('refresh_token', None)
 
         # convert expires_in to timestamp
         n = now()
@@ -410,8 +423,7 @@ class RedirectHandler(object):
 
         token = models.Token(**kwargs)
         token.save()
-        # TODO: sensitive?
-        logging.debug('saved token: %s', vars(token))
+        logging_sensitive('saved token: %s', vars(token))
 
         n, created = models.Nonce.objects.get_or_create(value=nonce)
         token.nonce.add(n)
@@ -452,6 +464,15 @@ class RedirectHandler(object):
 
         user_name, name = self.get_user_name_name(provider, id_token)
         user = get_user(provider, sub, user_name, name)
+        
+        # add email
+        for email_key in self.IDTOKEN_EMAIL:
+            if email_key in id_token:
+                user.email = id_token[email_key]
+                user.save()
+                logging.debug('filled in email address [{}] for user [{}]'.format(
+                        id_token[email_key], user.user_name))
+                break
 
         scope_names = [s.name for s in w.scopes.all()]
         return self._handle_token_body(user, w.provider, issuer, scope_names, nonce, body)

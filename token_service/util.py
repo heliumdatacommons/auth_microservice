@@ -54,12 +54,23 @@ def generate_base64(length):
     '''
     Returns a random base64 string with provided length. Not URL safe.
     String returned contains (3/4 * length) bytes of urandom entropy.
+
+    If the output is used for something that might be passed around in urls,
+    send it through sanitize_base64 first.
     '''
     nonce = os.urandom(int(math.ceil(int(float(length)*3/4))))
     return base64.b64encode(nonce).decode('utf-8')
 
 
 def sanitize_base64(s):
+    '''
+    Expects a base64 encoded string. Replaces non-url-safe characters
+    with other characters. This means the return is not standard base64.
+
+    Intended to be used purely for convenience in random base64 tokens,
+    as creates a url-safe version of base64 that is not longer and does not
+    decrease entropy.
+    '''
     s = s.replace('+', '-')
     s = s.replace('/', '_')
     s = s.replace('=', '~')
@@ -68,7 +79,7 @@ def sanitize_base64(s):
 
 def list_subset(A, B):
     '''
-    Takes two iterables, returns True if A is a subset of B
+    Takes two iterables, returns True if A is a subset of B.
     '''
     if not A or not B:
         return False
@@ -105,6 +116,8 @@ def build_redirect_url(base_url, token):
     url += '&uid=' + quote(user.sub)
     url += '&user_name=' + quote(user.user_name)
     url += '&name=' + quote(user.name)
+    if user.email is not None and len(user.email) > 0:
+        url += '&email=' + quote(user.email)
 
     # body = {
     #        'access_token': token.access_token,
