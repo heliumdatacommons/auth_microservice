@@ -465,7 +465,7 @@ class RedirectHandler(object):
 
         user_name, name = self.get_user_name_name(provider, id_token)
         user = get_user(provider, sub, user_name, name)
-        
+
         # add email
         for email_key in self.IDTOKEN_EMAIL:
             if email_key in id_token:
@@ -577,16 +577,16 @@ class RedirectHandler(object):
         redirect_uri = Config['redirect_uri']
 
         additional_params = '&' + provider_config.get('additional_params', '')
+        additional_params += '&response_type=code'
+        additional_params += '&access_type=offline' # Google-specific addition, should be ignored if not supported
+        scope = quote(' '.join(scopes))
+        additional_params += '&scope=' + scope
 
         # get auth endpoint
         if is_openid(provider_tag):
-            scope = quote(' '.join(scopes))
-
-            additional_params += '&scope=' + scope
-            additional_params += '&response_type=code'
-            additional_params += '&access_type=offline'
             if provider_config.get('prompt', True):
                 additional_params += '&prompt=login%20consent'
+
 
         if additional_params == '&':
             additional_params = ''

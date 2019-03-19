@@ -18,7 +18,7 @@ Switch to this account, all app-specific operations will be executed as the serv
 which does not have admin privileges
 ```
 $ sudo su - auth_microservice
-[auth_microservice] $ 
+[auth_microservice] $
 ```
 
 Install python 2.7 or greater. This example uses 3.6.
@@ -119,6 +119,15 @@ first existing attribute wins) (default to `name`)
 
 * prompt: boolean (default True): adds `prompt` parameter for `login` and `consent` to the authorization url
 
+## Registering clients
+
+To enable authorized clients to perform privileged operations like fetching tokens, a client token must be generated at runtime for the particular server instance the client wants to use. Using the `/etc/auth_microservice/admin.key` value generated earlier at installation time, send a request to the `/admin/key` endpoint with an `owner` field which describes the client. This `owner` field is purely for auditing purposes as each authenticated request can be tied back to a client after the fact.
+
+```
+curl -H "Authorization: Basic <admin.key value>" "https://example.org/admin/key?owner=test-client"
+{"key": "<64 byte hex string>"}
+```
+
 # Development
 
 ## Unittests
@@ -187,7 +196,7 @@ Please select a fix:
 Select an option: 1
 Please enter the default value now, as valid Python
 The datetime and django.utils.timezone modules are available, so you can do e.g. timezone.now()
->>> ''      
+>>> ''
 You are trying to add a non-nullable field 'access_token_hash' to token without a default; we can't do that (the database needs something to populate existing rows).
 Please select a fix:
  1) Provide a one-off default now (will be set on all existing rows)
