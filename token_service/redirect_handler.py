@@ -587,7 +587,6 @@ class RedirectHandler(object):
             if provider_config.get('prompt', True):
                 additional_params += '&prompt=login%20consent'
 
-
         if additional_params == '&':
             additional_params = ''
 
