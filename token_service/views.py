@@ -278,13 +278,14 @@ def url(request):
     scope = request.GET.get('scope')
     provider = request.GET.get('provider')
     return_to = request.GET.get('return_to')
-    if not scope:
-        logging.debug('missing scope: %s', scope)
-        return _http_response(HttpResponseBadRequest, 'missing scope')
+    if scope is None or len(scope) == 0:
+        scopes = []
+        #logging.debug('missing scope: %s', scope)
+        #return _http_response(HttpResponseBadRequest, 'missing scope')
     else:
         scopes = scope.split(' ')
-        if len(scopes) == 0:
-            return _http_response(HttpResponseBadRequest, 'no scopes provided')
+        #if len(scopes) == 0:
+        #    return _http_response(HttpResponseBadRequest, 'no scopes provided')
 
     if not provider:
         return _http_response(HttpResponseBadRequest, 'missing provider')
@@ -332,13 +333,14 @@ def token(request):
     # validate
     # nonce takes precedence over (scope,provider,uid) combination
     if not nonce:
-        if not scope:
-            logging.debug('missing scope: %s', scope)
-            return _http_response(HttpResponseBadRequest, 'missing scope')
+        if scope is None or len(scope) == 0:
+            scopes = []
+		    #logging.debug('missing scope: %s', scope)
+            #return _http_response(HttpResponseBadRequest, 'missing scope')
         else:
             scopes = scope.split(' ')
-            if len(scopes) == 0:
-                return _http_response(HttpResponseBadRequest, 'no scopes provided')
+            #if len(scopes) == 0:
+            #    return _http_response(HttpResponseBadRequest, 'no scopes provided')
 
         if not provider:
             return _http_response(HttpResponseBadRequest, 'missing provider')

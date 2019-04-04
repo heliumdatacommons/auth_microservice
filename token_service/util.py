@@ -36,8 +36,8 @@ def logging_sensitive(*args, **kwargs):
     """
     if config.debug_sensitive:
         logging.debug(*args, **kwargs)
-    else:
-        logging.debug("sensitive false: non-templated message %s", args[0])
+    #else:
+    #    logging.debug("sensitive false: non-templated message %s", args[0])
 
 
 def generate_nonce(length):
