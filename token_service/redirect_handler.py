@@ -8,8 +8,10 @@ from calendar import timegm
 logger = logging.getLogger(__name__)
 try:
     from urllib.parse import quote
+    from urllib.parse import unquote
 except ImportError:
     from urllib import quote
+    from urllib import unquote
 from django.http import (
         HttpResponse,
         HttpResponseBadRequest,
@@ -31,6 +33,7 @@ SUPPORTED_STANDARDS = [STANDARD_OPENID_CONNECT, STANDARD_OAUTH2]
 PROVIDER_GLOBUS = 'globus'
 PROVIDER_GOOGLE = 'google'
 PROVIDER_AUTH0 = 'auth0'
+PROVIDER_HYDROSHARE = 'hydroshare'
 DEFAULT_PROVIDER = PROVIDER_AUTH0
 
 def is_supported(provider):
@@ -146,6 +149,8 @@ def get_handler(request=None, token=None):
         return GlobusRedirectHandler()
     elif provider.startswith(PROVIDER_AUTH0):
         return Auth0RedirectHandler()
+    elif provider == 'hydroshare':
+        return HydroshareHandler()
     else:
         return RedirectHandler()
 
@@ -186,6 +191,8 @@ def get_validator(provider=DEFAULT_PROVIDER):
         return Auth0Validator()
     elif provider == PROVIDER_GLOBUS:
         return GlobusValidator()
+    elif provider == PROVIDER_HYDROSHARE:
+        return HydroshareValidator()
     else:
         raise inv
 
@@ -444,12 +451,13 @@ class RedirectHandler(object):
         Returns (bool, message, user_instance, token, nonce) or raises exception.
         '''
         body = json.loads(response.content)
+        logging.info('token response body: %s', body)
         id_token = body['id_token']
 
         # expand the id_token to the encoded json object
         # TODO signature validation if signature provided
         id_token = jwt.decode(id_token, verify=False)
-        logging.debug('id_token: %s', id_token)
+        logging.info('id_token: %s', id_token)
         if 'iat' in id_token and 'exp' in id_token:
             # TODO: Why not use these?
             logging.debug("from token iat %s exp %s", id_token['iat'], id_token['exp'])
@@ -576,30 +584,129 @@ class RedirectHandler(object):
         client_id = provider_config['client_id']
         redirect_uri = Config['redirect_uri']
 
-        additional_params = '&' + provider_config.get('additional_params', '')
-        additional_params += '&response_type=code'
-        additional_params += '&access_type=offline' # Google-specific addition, should be ignored if not supported
-        scope = quote(' '.join(scopes))
-        additional_params += '&scope=' + scope
+        params = []
+        def append_if_not_empty(k, v):
+            if v is not None and len(v) > 0:
+                params.append('%s=%s' % (k, v))
+        append_if_not_empty('nonce', nonce)
+        append_if_not_empty('state', state)
+        append_if_not_empty('redirect_uri', redirect_uri)
+        append_if_not_empty('client_id', client_id)
+
+        append_if_not_empty('scope', quote(' '.join(scopes).strip()))
+        params.append('response_type=code')
+        params.append('access_type=offline')
+
+        #additional_params += '&response_type=code'
+        #additional_params += '&access_type=offline' # Google-specific addition, should be ignored if not supported
+        #scope = quote(' '.join(scopes))
+        #additional_params += '&scope=' + scope
 
         # get auth endpoint
         if is_openid(provider_tag):
             if provider_config.get('prompt', True):
-                additional_params += '&prompt=login%20consent'
+                #additional_params += '&prompt=login%20consent'
+                params.append('prompt=login%20consent')
 
-        if additional_params == '&':
-            additional_params = ''
-
-        url = '{}?nonce={}&state={}&redirect_uri={}&client_id={}{}'.format(
-            authorization_endpoint,
-            nonce,
-            state,
-            redirect_uri,
-            client_id,
-            additional_params,
-        )
+        additional_params = provider_config.get('additional_params', '')
+        
+        #url = '{}?nonce={}&state={}&redirect_uri={}&client_id={}{}'.format(
+        #    authorization_endpoint,
+        #    nonce,
+        #    state,
+        #    redirect_uri,
+        #    client_id,
+        #    additional_params,
+        #)
+        param_str = '&'.join(params)
+        if len(additional_params) > 0:
+            param_str = param_str + '&' + additional_params
+        url = '%s?%s' % (authorization_endpoint, param_str)
         return url
 
+class HydroshareHandler(RedirectHandler):
+    def _handle_token_response(self, w, response):
+        '''
+        Called upon successful exchange of an authorization code for an access token.
+        Takes w a token_service.models.PendingCallback object and a requests.models.Response object
+        Returns (bool, message, user_instance, token, nonce) or raises exception.
+        '''
+        body = json.loads(response.content)
+        logging.info('token response body: %s', body)
+        #id_token = body['id_token']
+        userinfo_url = Config['providers'][PROVIDER_HYDROSHARE]['userinfo_endpoint']
+        if body['token_type'] != 'Bearer':
+            return (False, '', None, None, None)
+        access_token = body['access_token']
+        refresh_token = body['refresh_token']
+        scopes = unquote(body['scope']).strip().split(' ')
+        headers = {
+            'Authorization': 'Bearer ' + access_token
+        }
+        userinfo_resp = requests.get(userinfo_url, headers=headers)
+        if userinfo_resp.status_code != 200:
+            return (False, '', None, None, None)
+        userinfo = json.loads(userinfo_resp.content.decode('utf-8'))
+        print('userinfo: ' + str(userinfo))
+        user_name = userinfo['username']
+        user_id = userinfo['id']
+        email = userinfo['email']
+        name = None
+        if 'first_name' in userinfo:
+            name = userinfo['first_name']
+        if 'last_name' in userinfo:
+            if len(name) > 0:
+                name += ' ' + userinfo['last_name']
+            else:
+                name = userinfo['last_name']
+
+        user = get_user(PROVIDER_HYDROSHARE, user_id, user_name=user_name, name=name, warn=True)
+        print(vars(user))
+        token_dict = {
+            'access_token': access_token,
+            'expires_in': body['expires_in'],
+            'refresh_token': body.get('refresh_token', None)
+        }
+        success, errmsg, user, token, nonce = self._handle_token_body(
+                user, 
+                PROVIDER_HYDROSHARE,
+                PROVIDER_HYDROSHARE,
+                scopes,
+                # nonce not returned in oauth2, but can still be used for retrieval by clients
+                w.nonce,
+                token_dict,
+                act_hash=True)
+        """
+        id_token = jwt.decode(id_token, verify=False)
+        logging.info('id_token: %s', id_token)
+        if 'iat' in id_token and 'exp' in id_token:
+            # TODO: Why not use these?
+            logging.debug("from token iat %s exp %s", id_token['iat'], id_token['exp'])
+
+        provider, sub = self._provider_sub_from_id_token(w.provider, id_token)
+        issuer = id_token['iss']
+
+        nonce = id_token['nonce']
+        if nonce != w.nonce:
+            msg = 'login request malformed or expired'
+            logging.warn("%s nonce form id_token %s from w %s", msg, nonce, w.nonce)
+            return (False, msg, None, None, None)
+
+        user_name, name = self.get_user_name_name(provider, id_token)
+        user = get_user(provider, sub, user_name, name)
+
+        # add email
+        for email_key in self.IDTOKEN_EMAIL:
+            if email_key in id_token:
+                user.email = id_token[email_key]
+                user.save()
+                logging.debug('filled in email address [{}] for user [{}]'.format(
+                        id_token[email_key], user.user_name))
+                break
+        scope_names = [s.name for s in w.scopes.all()]
+        return self._handle_token_body(user, w.provider, issuer, scope_names, nonce, body)
+        """
+        return (True, '', user, token, w.nonce)
 
 class Auth0RedirectHandler(RedirectHandler):
     IDTOKEN_USER_NAME = ['preferred_username', 'email', 'nickname']
