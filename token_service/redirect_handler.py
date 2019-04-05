@@ -182,6 +182,7 @@ def get_pending_by_field_one(fieldname, fieldval):
 
 
 def get_validator(provider=DEFAULT_PROVIDER):
+    logging.debug('get_validator(%s)' % provider)
     inv = RuntimeError('invalid provider {}'.format(str(provider)))
     if not provider:
         return Auth0Validator()
@@ -192,7 +193,7 @@ def get_validator(provider=DEFAULT_PROVIDER):
     elif provider == PROVIDER_GLOBUS:
         return GlobusValidator()
     elif provider == PROVIDER_HYDROSHARE:
-        return HydroshareValidator()
+        return HydroShareValidator()
     else:
         raise inv
 
@@ -676,36 +677,6 @@ class HydroshareHandler(RedirectHandler):
                 w.nonce,
                 token_dict,
                 act_hash=True)
-        """
-        id_token = jwt.decode(id_token, verify=False)
-        logging.info('id_token: %s', id_token)
-        if 'iat' in id_token and 'exp' in id_token:
-            # TODO: Why not use these?
-            logging.debug("from token iat %s exp %s", id_token['iat'], id_token['exp'])
-
-        provider, sub = self._provider_sub_from_id_token(w.provider, id_token)
-        issuer = id_token['iss']
-
-        nonce = id_token['nonce']
-        if nonce != w.nonce:
-            msg = 'login request malformed or expired'
-            logging.warn("%s nonce form id_token %s from w %s", msg, nonce, w.nonce)
-            return (False, msg, None, None, None)
-
-        user_name, name = self.get_user_name_name(provider, id_token)
-        user = get_user(provider, sub, user_name, name)
-
-        # add email
-        for email_key in self.IDTOKEN_EMAIL:
-            if email_key in id_token:
-                user.email = id_token[email_key]
-                user.save()
-                logging.debug('filled in email address [{}] for user [{}]'.format(
-                        id_token[email_key], user.user_name))
-                break
-        scope_names = [s.name for s in w.scopes.all()]
-        return self._handle_token_body(user, w.provider, issuer, scope_names, nonce, body)
-        """
         return (True, '', user, token, w.nonce)
 
 class Auth0RedirectHandler(RedirectHandler):
@@ -927,6 +898,57 @@ class Validator(object):
                         r['username'] = user.user_name
                 return r
         return {'active': False}
+
+"""
+Useful for OAuth2-based providers, but which use Bearer authorization and userinfo.
+
+Additional checks can be placed in checkFn, which receives the userinfo response body in dict,
+and is expected to return boolean type
+"""
+class UserInfoBearerValidator(Validator):
+    # for each record, it will check whether a non-empty value of one of the 
+    # field name exists, and fail validation if not
+    REQUIRED_FIELDS = [
+            ['username', 'user_name', 'user'],  # require a user name
+            ['email', 'email_address']]         # require an email
+
+    def validate(self, token, provider=DEFAULT_PROVIDER, checkFn=None):
+        endpoint = get_provider_config(provider, 'userinfo_endpoint')
+        invalid = {'active': False}
+        h = {'Authorization': 'Bearer %s' % token}
+        resp = requests.get(endpoint, headers=h)
+        if resp.status_code >= 300:
+            logging.error('userinfo returned %d for provider %s: %s', resp.status_code, provider, resp.content)
+            return invalid
+        userinfo = json.loads(resp.content.decode('utf-8'))
+        required_found = 0
+        for field_names in self.REQUIRED_FIELDS:
+            for name in field_names:
+                if len(userinfo.get(name, '')) > 0:
+                    required_found += 1
+                    break
+        if required_found != len(self.REQUIRED_FIELDS):
+            logging.debug('userinfo for provider %s did not contain all required fields', provider)
+            return invalid
+
+        if checkFn is not None:
+            check_valid = checkFn(userinfo)
+            if check_valid == False:
+                logging.debug('userinfo for provider %s did not pass checkFn passed as arg', provider)
+                return invalid
+
+        return {
+            'active': True,
+            # TODO these need to be expanded for more use cases like in Validator.validate
+            # possibly rely on checkFn, and have it return None or dict of {sub, username} keys
+            # so each provider can handle their own format of userinfo response
+            'sub': userinfo.get('id', None),
+            'username': userinfo.get('user_name', None)
+        }
+
+class HydroShareValidator(UserInfoBearerValidator):
+    def validate(self, token, provider=PROVIDER_HYDROSHARE):
+        return super().validate(token, provider, checkFn=None)
 
 class GlobusValidator(Validator):
     def validate(self, token, provider=PROVIDER_GLOBUS):
