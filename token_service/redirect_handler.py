@@ -443,7 +443,7 @@ class RedirectHandler(object):
         Takes w a token_service.models.PendingCallback object and a requests.models.Response object
         Returns (bool, message, user_instance, token, nonce) or raises exception.
         '''
-        body = json.loads(response.content)
+        body = json.loads(response.content.decode('utf-8'))
         id_token = body['id_token']
 
         # expand the id_token to the encoded json object
@@ -723,7 +723,7 @@ class GlobusRedirectHandler(RedirectHandler):
         tokens in the callback request. This method returns as the token return object, the top
         level token in the response, but also stores the 'other_tokens'
         '''
-        body = json.loads(response.content)
+        body = json.loads(response.content.decode('utf-8'))
         issuer = body['resource_server']
         scopes = []
         if is_str(body['scope']):
