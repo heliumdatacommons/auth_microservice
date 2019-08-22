@@ -279,7 +279,7 @@ class RedirectHandler(object):
         if return_to is None:
             return_to = ''
         else:
-            # santize input TODO what to do if no protocol specified
+            # sanitize input TODO what to do if no protocol specified
             return_to = return_to.strip('/')
 
         # enforce uniqueness of nonces
