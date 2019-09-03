@@ -31,6 +31,7 @@ SUPPORTED_STANDARDS = [STANDARD_OPENID_CONNECT, STANDARD_OAUTH2]
 PROVIDER_GLOBUS = 'globus'
 PROVIDER_GOOGLE = 'google'
 PROVIDER_AUTH0 = 'auth0'
+PROVIDER_KEYCLOAK = 'keycloak_openid'
 DEFAULT_PROVIDER = PROVIDER_AUTH0
 
 def is_supported(provider):
@@ -186,6 +187,8 @@ def get_validator(provider=DEFAULT_PROVIDER):
         return Auth0Validator()
     elif provider == PROVIDER_GLOBUS:
         return GlobusValidator()
+    elif provider == PROVIDER_KEYCLOAK:
+        return KeycloakValidator()
     else:
         raise inv
 
@@ -897,3 +900,8 @@ class GoogleValidator(Validator):
                     r['sub'] = body['user_id']
                 return r
         return {'active': False}
+
+
+class KeycloakValidator(Validator):
+    def validate(self, token, provider=PROVIDER_KEYCLOAK):
+        return Validator().validate(token, provider)
