@@ -27,7 +27,7 @@ Install python 2.7 or greater. This example uses 3.6.
 [auth_microservice] $ git clone https://github.com/heliumdatacommons/auth_microservice.git
 [auth_microservice] $ cd auth_microservice/
 [auth_microservice] $ cp example/config/* /etc/auth_microservice
-[auth_microservice] $ rename .example '' /etc/auth_microservice/*.example
+[auth_microservice] $ rename 's/.example$//' /etc/auth_microservice/*.example
 ```
 
 Edit the files in `/etc/auth_microservice`, filling them in with appropriate values.
