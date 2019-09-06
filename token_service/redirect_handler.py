@@ -5,11 +5,8 @@ import jwt
 import logging
 import requests
 from calendar import timegm
-logger = logging.getLogger(__name__)
-try:
-    from urllib.parse import quote
-except ImportError:
-    from urllib import quote
+
+from django.core.exceptions import ObjectDoesNotExist
 from django.http import (
         HttpResponse,
         HttpResponseBadRequest,
@@ -25,6 +22,13 @@ from .config import Config
 from . import models
 from .util import logging_sensitive
 
+logger = logging.getLogger(__name__)
+try:
+    from urllib.parse import quote
+except ImportError:
+    from urllib import quote
+
+
 STANDARD_OPENID_CONNECT = 'OpenID Connect'
 STANDARD_OAUTH2 = 'OAuth 2.0'
 SUPPORTED_STANDARDS = [STANDARD_OPENID_CONNECT, STANDARD_OAUTH2]
@@ -33,6 +37,7 @@ PROVIDER_GOOGLE = 'google'
 PROVIDER_AUTH0 = 'auth0'
 PROVIDER_KEYCLOAK = 'keycloak_openid'
 DEFAULT_PROVIDER = PROVIDER_AUTH0
+
 
 def is_supported(provider):
     return Config['providers'][provider]['standard'] in SUPPORTED_STANDARDS
@@ -468,7 +473,7 @@ class RedirectHandler(object):
 
         user_name, name = self.get_user_name_name(provider, id_token)
         user = get_user(provider, sub, user_name, name)
-        
+
         # add email
         for email_key in self.IDTOKEN_EMAIL:
             if email_key in id_token:
@@ -639,7 +644,7 @@ class Auth0RedirectHandler(RedirectHandler):
         if not w:
             return HttpResponseBadRequest('callback request from login is malformed, or authorization session expired')
         if now() > w.creation_time + datetime.timedelta(seconds=Config['url_expiration_timeout']):
-                return HttpResponseBadRequest('This authorization url has expired, please retry')
+            return HttpResponseBadRequest('This authorization url has expired, please retry')
         client_id = Config['providers'][PROVIDER_AUTH0]['client_id']
         client_secret = Config['providers'][PROVIDER_AUTH0]['client_secret']
         redirect_uri = Config['redirect_uri']
@@ -679,6 +684,7 @@ class Auth0RedirectHandler(RedirectHandler):
 
     def _refresh_token(self, token_model):
         provider_config = Config['providers'][PROVIDER_AUTH0]
+        token_endpoint = Config['providers'][PROVIDER_AUTH0]['token_endpoint']
         if not token_model.refresh_token:
             # don't rely on exception for this
             raise RuntimeError('No refresh token available')
@@ -778,12 +784,10 @@ class GlobusRedirectHandler(RedirectHandler):
             # TODO: why handle more than one, only first element of tokens is passed?
             # TODO: not success check?
             tokens.append(token)
-
         return (True, '', user, tokens[0], nonce)
 
-"""
-This is a reference implementation for OIDC IPDs which conform exactly to spec
-"""
+
+# This is a reference implementation for OIDC IPDs which conform exactly to spec
 class Validator(object):
     def validate(self, token, provider=DEFAULT_PROVIDER):
         endpoint = get_provider_config(provider, 'introspection_endpoint')
@@ -825,9 +829,11 @@ class Validator(object):
                 return r
         return {'active': False}
 
+
 class GlobusValidator(Validator):
     def validate(self, token, provider=PROVIDER_GLOBUS):
         return Validator().validate(token, provider)
+
 
 class Auth0Validator(Validator):
     def validate(self, token, provider=PROVIDER_AUTH0):
@@ -872,7 +878,7 @@ class Auth0Validator(Validator):
             for validator in [GlobusValidator, GoogleValidator]:
                 logging.debug('trying to validate against {} with token {}'.format(validator, token))
                 vresp = validator().validate(token)
-                if vresp['active'] == True:
+                if vresp['active'] is True:
                     return vresp
             return {'active': False}
 
